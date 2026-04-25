@@ -53,6 +53,12 @@ export async function GET(event: RequestEvent) {
             }
 
             t.expand?.waypoints_via_trail?.sort((a, b) => (a.distance_from_start ?? 0) - (b.distance_from_start ?? 0))
+
+            t.photos = t.expand?.assets_via_trail
+                ?.filter((asset) => asset.type === "photo" && (asset.file || (asset.storage_mode && asset.storage_mode !== "copy")))
+                .map((asset) => asset.file
+                    ? `/api/v1/files/${asset.collectionId}/${asset.id}/${asset.file}`
+                    : `/api/v1/assets/${asset.id}/file`) ?? [];
         }
         return json(r)
     } catch (e: any) {

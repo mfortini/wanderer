@@ -31,6 +31,7 @@
     }
 
     const ClientSummitLogCreateSchema = SummitLogCreateSchema.extend({
+        photos: z.array(z.string()).default([]),
         _photos: z.array(z.instanceof(File)).optional(),
         _gpx: z.instanceof(File).optional().nullable(),
         expand: z

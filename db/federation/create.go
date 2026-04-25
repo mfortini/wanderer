@@ -264,7 +264,10 @@ func CreateSummitLogActivity(app core.App, actor *core.Record, summitLog *core.R
 		cc.Append(pub.IRI(inbox))
 	}
 
-	photos := summitLog.GetStringSlice("photos")
+	photos, err := util.PhotoAssetURLs(app, "summit_log", summitLog.Id, origin, -1)
+	if err != nil {
+		return err
+	}
 
 	gpx := ""
 	if summitLog.GetString("gpx") != "" {
@@ -273,12 +276,10 @@ func CreateSummitLogActivity(app core.App, actor *core.Record, summitLog *core.R
 
 	attachments := make(pub.ItemCollection, max(len(photos), 2))
 	for i := range len(photos) {
-		iri := fmt.Sprintf("%s/api/v1/files/summit_logs/%s/%s", origin, summitLog.Id, photos[i])
-
 		attachments[i] = pub.Document{
 			Type:      pub.ImageType,
 			MediaType: "image/jpeg",
-			URL:       pub.IRI(iri),
+			URL:       pub.IRI(photos[i]),
 		}
 	}
 	if gpx != "" {
@@ -705,6 +706,7 @@ func processCreateOrUpdateSummitLogActivity(activity pub.Activity, app core.App,
 	record.Set("trail", trail.Id)
 	record.Set("iri", logObject.ID.String())
 
+	photoFiles := []*filesystem.File{}
 	if logObject.Attachment != nil {
 		attachments, err := pub.ToItemCollection(logObject.Attachment)
 		if err != nil {
@@ -725,17 +727,15 @@ func processCreateOrUpdateSummitLogActivity(activity pub.Activity, app core.App,
 			}
 		}
 
+		photoFiles = make([]*filesystem.File, 0, len(photoURLs))
 		if len(photoURLs) > 0 {
-			photos := make([]*filesystem.File, len(photoURLs))
-			for i, purl := range photoURLs {
+			for _, purl := range photoURLs {
 				photo, err := filesystem.NewFileFromURL(context.Background(), purl)
 				if err != nil {
 					continue
 				}
-				photos[i] = photo
+				photoFiles = append(photoFiles, photo)
 			}
-
-			record.Set("photos", photos)
 		}
 
 		if gpxURL != "" {
@@ -751,6 +751,20 @@ func processCreateOrUpdateSummitLogActivity(activity pub.Activity, app core.App,
 	err = app.Save(record)
 	if err != nil {
 		return err
+	}
+
+	for _, photo := range photoFiles {
+		if err := util.CreatePhotoAsset(app, util.PhotoAssetInput{
+			Author:    actor.Id,
+			Trail:     trail.Id,
+			SummitLog: record.Id,
+			File:      photo,
+			Metadata: map[string]any{
+				"source": "activitypub",
+			},
+		}); err != nil {
+			return err
+		}
 	}
 
 	// send notifications to all mentioned actors

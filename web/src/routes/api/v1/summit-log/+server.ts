@@ -166,6 +166,16 @@ export async function PUT(event: RequestEvent) {
 
 
 function removeTimeFromDates(logs: SummitLog[]) {
-    logs.forEach(l => l.date = l.date.substring(0, 10));
+    logs.forEach(l => {
+        l.date = l.date.substring(0, 10);
+        l.photos = assetPhotos(l.expand?.assets_via_summit_log);
+    });
+}
 
+function assetPhotos(assets?: { id: string; collectionId: string; type: string; file?: string; storage_mode?: string }[]) {
+    return assets
+        ?.filter((asset) => asset.type === "photo" && (asset.file || (asset.storage_mode && asset.storage_mode !== "copy")))
+        .map((asset) => asset.file
+            ? `/api/v1/files/${asset.collectionId}/${asset.id}/${asset.file}`
+            : `/api/v1/assets/${asset.id}/file`) ?? [];
 }

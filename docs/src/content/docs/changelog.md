@@ -2,6 +2,13 @@
 title: Changelog
 description: What changed in the last patch?
 ---
+## Unreleased
+### Features
+- Adds Immich integration documentation for setup, matching behavior, photo storage modes, and manual photo imports.
+
+### Upgrade Notes
+- Immich introduces a new asset storage model for trail, waypoint, and summit log photos. Back up your instance before upgrading. The asset migration should be treated as irreversible in production because the rollback restores the legacy `photos` fields but does not copy migrated asset files back to their previous locations.
+
 ## v0.18.5
 ### Security
 - Fixes CVE-2022-39299 via xmldom upgrade

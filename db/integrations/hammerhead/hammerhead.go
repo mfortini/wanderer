@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"pocketbase/integrations/immich"
+
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -73,6 +75,10 @@ func SyncHammerhead(app core.App) error {
 			app.Logger().Warn(warning)
 			continue
 		}
+		immichIntegration, err := immich.ParseIntegration(i.GetString("immich"), encryptionKey)
+		if err != nil {
+			app.Logger().Warn(fmt.Sprintf("unable to parse Immich integration for user '%s': %v", userId, err))
+		}
 
 		page := 0
 		totalPages := 0
@@ -108,7 +114,7 @@ func SyncHammerhead(app core.App) error {
 					totalPages = curTotalPages
 				}
 
-				err, stopped = syncTrailWithTours(app, h, actorId, tours, after)
+				err, stopped = syncTrailWithTours(app, h, userId, actorId, tours, after, immichIntegration)
 				if err != nil {
 					warning := fmt.Sprintf("error syncing Hammerhead tours with trails: %v\n", err)
 					fmt.Print(warning)
@@ -139,7 +145,7 @@ func SyncHammerhead(app core.App) error {
 					totalPages = curTotalPages
 				}
 
-				err, stopped = syncTrailWithActivities(app, h, actorId, tours, after)
+				err, stopped = syncTrailWithActivities(app, h, userId, actorId, tours, after, immichIntegration)
 				if err != nil {
 					warning := fmt.Sprintf("error syncing Hammerhead tours with trails: %v\n", err)
 					fmt.Print(warning)
@@ -406,7 +412,7 @@ func (h *HammerheadApi) fetchDetailedTour(tour HammerheadTourResponse) (*Hammerh
 	return data, nil
 }
 
-func syncTrailWithTours(app core.App, k *HammerheadApi, actor string, tours []HammerheadTourResponse, after int64) (error, bool) {
+func syncTrailWithTours(app core.App, k *HammerheadApi, user string, actor string, tours []HammerheadTourResponse, after int64, immichCfg *immich.Integration) (error, bool) {
 	for _, tour := range tours {
 
 		trails, err := app.FindRecordsByFilter("trails", "external_id = {:id}", "", 1, 0, dbx.Params{"id": tour.ID})
@@ -439,17 +445,22 @@ func syncTrailWithTours(app core.App, k *HammerheadApi, actor string, tours []Ha
 			continue
 		}
 
-		_, err = createTrailFromTour(app, detailedTour, gpx, actor)
+		trailID, err := createTrailFromTour(app, detailedTour, gpx, actor)
 		if err != nil {
 			app.Logger().Warn(fmt.Sprintf("Unable to create trail for tour '%s': %v", tour.Name, err))
 			continue
+		}
+		if immichCfg != nil && immichCfg.ShouldUseFor("hammerhead") && gpx != nil && trailID != "" {
+			if err := immich.AttachWaypointsFromGPX(app, immichCfg, user, trailID, gpx); err != nil {
+				app.Logger().Warn(fmt.Sprintf("Unable to import Immich assets for tour '%s': %v", tour.Name, err))
+			}
 		}
 	}
 
 	return nil, false
 }
 
-func syncTrailWithActivities(app core.App, k *HammerheadApi, actor string, tours []HammerheadActivityResponse, after int64) (error, bool) {
+func syncTrailWithActivities(app core.App, k *HammerheadApi, user string, actor string, tours []HammerheadActivityResponse, after int64, immichCfg *immich.Integration) (error, bool) {
 	for _, tour := range tours {
 
 		trails, err := app.FindRecordsByFilter("trails", "external_id = {:id}", "", 1, 0, dbx.Params{"id": tour.ID})
@@ -483,10 +494,15 @@ func syncTrailWithActivities(app core.App, k *HammerheadApi, actor string, tours
 			continue
 		}
 
-		_, err = createTrailFromActivity(app, detailedTour, gpx, actor)
+		trailID, err := createTrailFromActivity(app, detailedTour, gpx, actor)
 		if err != nil {
 			app.Logger().Warn(fmt.Sprintf("Unable to create trail for tour '%s': %v", tour.Name, err))
 			continue
+		}
+		if immichCfg != nil && immichCfg.ShouldUseFor("hammerhead") && gpx != nil && trailID != "" {
+			if err := immich.AttachWaypointsFromGPX(app, immichCfg, user, trailID, gpx); err != nil {
+				app.Logger().Warn(fmt.Sprintf("Unable to import Immich assets for activity '%s': %v", tour.Name, err))
+			}
 		}
 	}
 

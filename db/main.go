@@ -26,6 +26,7 @@ import (
 	"pocketbase/commands"
 	"pocketbase/federation"
 	"pocketbase/integrations/hammerhead"
+	"pocketbase/integrations/immich"
 	"pocketbase/integrations/komoot"
 	"pocketbase/integrations/strava"
 
@@ -103,8 +104,12 @@ func setupEventHandlers(app *pocketbase.PocketBase, client meilisearch.ServiceMa
 	app.OnRecordAfterUpdateSuccess("users").BindFunc(updateUserHandler(client))
 
 	app.OnRecordAfterCreateSuccess("trails").BindFunc(createTrailHandler(client))
+	app.OnRecordUpdateRequest("trails").BindFunc(materializePrivateImmichLinksBeforePublish())
 	app.OnRecordAfterUpdateSuccess("trails").BindFunc(updateTrailHandler(client))
 	app.OnRecordAfterDeleteSuccess("trails").BindFunc(deleteTrailHandler(client))
+
+	app.OnRecordAfterCreateSuccess("assets").BindFunc(reindexTrailOnAssetChange(client))
+	app.OnRecordAfterDeleteSuccess("assets").BindFunc(reindexTrailOnAssetChange(client))
 
 	app.OnRecordCreateRequest("summit_logs").BindFunc(createSummitLogHandler(client))
 	app.OnRecordUpdateRequest("summit_logs").BindFunc(updateSummitLogHandler())
@@ -346,6 +351,124 @@ func updateTrailHandler(client meilisearch.ServiceManager) func(e *core.RecordEv
 
 		return nil
 	}
+}
+
+func materializePrivateImmichLinksBeforePublish() func(e *core.RecordRequestEvent) error {
+	return func(e *core.RecordRequestEvent) error {
+		if e.Record.GetBool("public") {
+			app := e.App
+			trailID := e.Record.Id
+			go func() {
+				if err := immich.MaterializePrivateLinkedAssetsForTrail(app, trailID); err != nil {
+					app.Logger().Warn("failed to materialize immich assets for published trail", "trail", trailID, "error", err)
+				}
+			}()
+		}
+		return e.Next()
+	}
+}
+
+func assetLinkedToPublicTrail(app core.App, asset *core.Record) bool {
+	if asset == nil {
+		return false
+	}
+	trailID := asset.GetString("trail")
+	if trailID == "" && asset.GetString("waypoint") != "" {
+		waypoint, err := app.FindRecordById("waypoints", asset.GetString("waypoint"))
+		if err == nil {
+			trailID = waypoint.GetString("trail")
+		}
+	}
+	if trailID == "" && asset.GetString("summit_log") != "" {
+		summitLog, err := app.FindRecordById("summit_logs", asset.GetString("summit_log"))
+		if err == nil {
+			trailID = summitLog.GetString("trail")
+		}
+	}
+	if trailID == "" {
+		return false
+	}
+	trail, err := app.FindRecordById("trails", trailID)
+	return err == nil && trail.GetBool("public")
+}
+
+func assetFileURL(asset *core.Record) string {
+	if asset == nil {
+		return ""
+	}
+	file := asset.GetString("file")
+	if file == "" {
+		return ""
+	}
+	return fmt.Sprintf("/api/v1/files/%s/%s/%s", asset.Collection().Id, asset.Id, file)
+}
+
+func reindexTrailOnAssetChange(client meilisearch.ServiceManager) func(e *core.RecordEvent) error {
+	return func(e *core.RecordEvent) error {
+		trailID := e.Record.GetString("trail")
+		if trailID == "" {
+			return e.Next()
+		}
+		trail, err := e.App.FindRecordById("trails", trailID)
+		if err != nil {
+			return e.Next()
+		}
+		if err := util.IndexTrails(e.App, []*core.Record{trail}, client); err != nil {
+			e.App.Logger().Warn("failed to reindex trail after asset change", "trail", trailID, "error", err)
+		}
+		return e.Next()
+	}
+}
+
+func userOwnsTrail(app core.App, userID, trailID string) (bool, error) {
+	if userID == "" || trailID == "" {
+		return false, nil
+	}
+	trail, err := app.FindRecordById("trails", trailID)
+	if err != nil {
+		return false, err
+	}
+	actor, err := app.FindRecordById("activitypub_actors", trail.GetString("author"))
+	if err != nil {
+		return false, err
+	}
+	return actor.GetString("user") == userID, nil
+}
+
+func userOwnsWaypoint(app core.App, userID, waypointID, trailID string) (bool, error) {
+	if userID == "" || waypointID == "" {
+		return false, nil
+	}
+	waypoint, err := app.FindRecordById("waypoints", waypointID)
+	if err != nil {
+		return false, err
+	}
+	if trailID != "" && waypoint.GetString("trail") != trailID {
+		return false, nil
+	}
+	return userOwnsTrail(app, userID, waypoint.GetString("trail"))
+}
+
+func ensureOwnsTrail(app core.App, userID, trailID string) error {
+	ok, err := userOwnsTrail(app, userID, trailID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return apis.NewForbiddenError("Insufficient permissions for trail", nil)
+	}
+	return nil
+}
+
+func ensureOwnsWaypoint(app core.App, userID, waypointID, trailID string) error {
+	ok, err := userOwnsWaypoint(app, userID, waypointID, trailID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return apis.NewForbiddenError("Insufficient permissions for waypoint", nil)
+	}
+	return nil
 }
 
 func deleteTrailHandler(client meilisearch.ServiceManager) func(e *core.RecordEvent) error {
@@ -862,6 +985,7 @@ func censorIntegrationSecrets(r *core.Record) error {
 		"strava":     {"clientSecret", "refreshToken", "accessToken", "expiresAt"},
 		"komoot":     {"password"},
 		"hammerhead": {"password"},
+		"immich":     {"apiKey"},
 	}
 	for key, secretKeys := range secrets {
 		if integrationString := r.GetString(key); integrationString != "" {
@@ -896,6 +1020,7 @@ func encryptIntegrationSecrets(app core.App, r *core.Record) error {
 		"strava":     {"clientSecret", "refreshToken", "accessToken", "expiresAt"},
 		"komoot":     {"password"},
 		"hammerhead": {"password"},
+		"immich":     {"apiKey"},
 	}
 
 	original, _ := app.FindRecordById("integrations", r.Id)
@@ -1143,6 +1268,314 @@ func registerRoutes(se *core.ServeEvent, client meilisearch.ServiceManager) {
 		return e.JSON(http.StatusOK, map[string]string{
 			"token": token,
 		})
+	})
+
+	se.Router.POST("/integration/immich/candidates", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		var data struct {
+			TrailID      string  `json:"trailId"`
+			Lat          float64 `json:"lat"`
+			Lon          float64 `json:"lon"`
+			YearsBack    int     `json:"yearsBack"`
+			DoubleRadius bool    `json:"doubleRadius"`
+		}
+		if err := e.BindBody(&data); err != nil {
+			return apis.NewBadRequestError("Failed to read request data", err)
+		}
+		if data.TrailID == "" && data.Lat == 0 && data.Lon == 0 {
+			return apis.NewBadRequestError("trailId or lat/lon is required", nil)
+		}
+		if data.TrailID != "" {
+			if err := ensureOwnsTrail(e.App, e.Auth.Id, data.TrailID); err != nil {
+				return err
+			}
+		}
+
+		integrations, err := e.App.FindRecordsByFilter("integrations", "user={:user}", "", 1, 0, dbx.Params{"user": e.Auth.Id})
+		if err != nil || len(integrations) == 0 {
+			return e.JSON(http.StatusOK, immich.CandidatesResult{Candidates: []immich.Candidate{}})
+		}
+		cfg, err := immich.ParseIntegrationFromRecord(integrations[0])
+		if err != nil || cfg == nil {
+			return e.JSON(http.StatusOK, immich.CandidatesResult{Candidates: []immich.Candidate{}})
+		}
+
+		var result *immich.CandidatesResult
+		if data.TrailID != "" {
+			result, err = immich.FindCandidates(e.App, cfg, data.TrailID, data.YearsBack)
+		} else {
+			result, err = immich.FindCandidatesNearPoint(cfg, data.Lat, data.Lon, data.YearsBack, data.DoubleRadius)
+		}
+		if err != nil {
+			return e.InternalServerError(err.Error(), err)
+		}
+		return e.JSON(http.StatusOK, result)
+	})
+
+	se.Router.POST("/integration/immich/import", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		var data struct {
+			TrailID  string   `json:"trailId"`
+			AssetIDs []string `json:"assetIds"`
+		}
+		if err := e.BindBody(&data); err != nil {
+			return apis.NewBadRequestError("Failed to read request data", err)
+		}
+		if data.TrailID == "" || len(data.AssetIDs) == 0 {
+			return apis.NewBadRequestError("trailId and assetIds are required", nil)
+		}
+		if err := ensureOwnsTrail(e.App, e.Auth.Id, data.TrailID); err != nil {
+			return err
+		}
+
+		integrations, err := e.App.FindRecordsByFilter("integrations", "user={:user}", "", 1, 0, dbx.Params{"user": e.Auth.Id})
+		if err != nil || len(integrations) == 0 {
+			return e.JSON(http.StatusOK, []*core.Record{})
+		}
+		cfg, err := immich.ParseIntegrationFromRecord(integrations[0])
+		if err != nil || cfg == nil {
+			return e.JSON(http.StatusOK, []*core.Record{})
+		}
+
+		imported, err := immich.ImportSelectedAssets(e.App, cfg, e.Auth.Id, data.TrailID, data.AssetIDs)
+		if err != nil {
+			return e.InternalServerError("Failed to import assets", err)
+		}
+		return e.JSON(http.StatusOK, imported)
+	})
+
+	se.Router.POST("/integration/immich/import-to-waypoint", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+		var data struct {
+			TrailID    string   `json:"trailId"`
+			WaypointID string   `json:"waypointId"`
+			AssetIDs   []string `json:"assetIds"`
+		}
+		if err := e.BindBody(&data); err != nil {
+			return apis.NewBadRequestError("Failed to read request data", err)
+		}
+		if data.TrailID == "" || data.WaypointID == "" || len(data.AssetIDs) == 0 {
+			return apis.NewBadRequestError("trailId, waypointId, and assetIds are required", nil)
+		}
+		if err := ensureOwnsWaypoint(e.App, e.Auth.Id, data.WaypointID, data.TrailID); err != nil {
+			return err
+		}
+		integrations, err := e.App.FindRecordsByFilter("integrations", "user={:user}", "", 1, 0, dbx.Params{"user": e.Auth.Id})
+		if err != nil || len(integrations) == 0 {
+			return apis.NewBadRequestError("Immich integration not found", nil)
+		}
+		cfg, err := immich.ParseIntegrationFromRecord(integrations[0])
+		if err != nil || cfg == nil {
+			return apis.NewBadRequestError("Immich integration not configured", nil)
+		}
+		if err := immich.ImportAssetsToWaypoint(e.App, cfg, e.Auth.Id, data.TrailID, data.WaypointID, data.AssetIDs); err != nil {
+			return e.InternalServerError(err.Error(), err)
+		}
+		return e.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	se.Router.GET("/integration/immich/thumbnail/{id}", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		assetID := e.Request.PathValue("id")
+		if !immich.IsAssetID(assetID) {
+			return apis.NewBadRequestError("invalid asset id", nil)
+		}
+
+		integrations, err := e.App.FindRecordsByFilter("integrations", "user={:user}", "", 1, 0, dbx.Params{"user": e.Auth.Id})
+		if err != nil || len(integrations) == 0 {
+			return e.NotFoundError("Integration not found", nil)
+		}
+		cfg, err := immich.ParseIntegrationFromRecord(integrations[0])
+		if err != nil || cfg == nil {
+			return e.NotFoundError("Integration not configured", nil)
+		}
+
+		resp, err := immich.ProxyThumbnail(cfg, assetID)
+		if err != nil {
+			return e.InternalServerError("Failed to fetch thumbnail", err)
+		}
+		defer resp.Body.Close()
+
+		return e.Stream(resp.StatusCode, resp.Header.Get("Content-Type"), resp.Body)
+	})
+
+	se.Router.POST("/integration/immich/attach", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		var data struct {
+			TrailID  string `json:"trailId"`
+			Provider string `json:"provider"`
+		}
+		if err := e.BindBody(&data); err != nil {
+			return apis.NewBadRequestError("Failed to read request data", err)
+		}
+		if data.TrailID == "" {
+			return apis.NewBadRequestError("trailId is required", nil)
+		}
+		if err := ensureOwnsTrail(e.App, e.Auth.Id, data.TrailID); err != nil {
+			return err
+		}
+		if data.Provider == "" {
+			data.Provider = "upload"
+		}
+
+		e.App.Logger().Info("immich attach requested", "user", e.Auth.Id, "trail", data.TrailID, "provider", data.Provider)
+		if err := immich.AttachTrailForProvider(e.App, e.Auth.Id, data.TrailID, data.Provider); err != nil {
+			e.App.Logger().Error("immich attach failed", "user", e.Auth.Id, "trail", data.TrailID, "provider", data.Provider, "error", err)
+			return err
+		}
+		e.App.Logger().Info("immich attach finished", "user", e.Auth.Id, "trail", data.TrailID, "provider", data.Provider)
+
+		return e.JSON(http.StatusOK, nil)
+	})
+
+	se.Router.POST("/integration/immich/check", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		var data immich.Integration
+		if err := e.BindBody(&data); err != nil {
+			return apis.NewBadRequestError("Failed to read request data", err)
+		}
+
+		if data.URL == "" || data.ApiKey == "" {
+			integrations, err := e.App.FindRecordsByFilter("integrations", "user={:user}", "", 1, 0, dbx.Params{"user": e.Auth.Id})
+			if err != nil {
+				return err
+			}
+			if len(integrations) == 0 {
+				return apis.NewBadRequestError("Immich integration missing", nil)
+			}
+			stored, err := immich.ParseStoredIntegrationFromRecord(integrations[0])
+			if err != nil {
+				return err
+			}
+			if stored == nil {
+				return apis.NewBadRequestError("Immich integration missing", nil)
+			}
+			if data.URL == "" {
+				data.URL = stored.URL
+			}
+			if data.ApiKey == "" {
+				data.ApiKey = stored.ApiKey
+			}
+			if data.PhotoMode == "" {
+				data.PhotoMode = stored.PhotoMode
+			}
+		}
+
+		if err := immich.CheckConnection(&data); err != nil {
+			return apis.NewBadRequestError("Immich connection check failed", err)
+		}
+
+		return e.JSON(http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	se.Router.POST("/integration/immich/materialize-all", func(e *core.RequestEvent) error {
+		if e.Auth == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+		var data struct {
+			PublicOnly bool `json:"publicOnly"`
+		}
+		_ = e.BindBody(&data)
+		app := e.App
+		userID := e.Auth.Id
+		go func() {
+			var err error
+			if data.PublicOnly {
+				err = immich.MaterializeRemoteAssetsForUserPublicTrails(app, userID)
+			} else {
+				err = immich.MaterializeRemoteAssetsForUser(app, userID)
+			}
+			if err != nil {
+				app.Logger().Warn("failed to materialize immich assets", "user", userID, "publicOnly", data.PublicOnly, "error", err)
+			}
+		}()
+		return e.JSON(http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	se.Router.GET("/assets/{id}/file", func(e *core.RequestEvent) error {
+		assetID := e.Request.PathValue("id")
+		if assetID == "" {
+			return e.NotFoundError("", nil)
+		}
+
+		asset, err := e.App.FindRecordById("assets", assetID)
+		if err != nil {
+			return e.NotFoundError("", err)
+		}
+
+		requestInfo, err := e.RequestInfo()
+		if err != nil {
+			return e.InternalServerError("Failed to load request info", err)
+		}
+		if ok, _ := e.App.CanAccessRecord(asset, requestInfo, asset.Collection().ViewRule); !ok {
+			return e.NotFoundError("", errors.New("insufficient permissions to access the asset"))
+		}
+
+		if fileURL := assetFileURL(asset); fileURL != "" {
+			return e.Redirect(http.StatusFound, fileURL)
+		}
+
+		if !immich.IsRemotePhotoMode(asset.GetString("storage_mode")) {
+			return e.NotFoundError("", nil)
+		}
+		if immich.IsPrivateLinkPhotoMode(asset.GetString("storage_mode")) && assetLinkedToPublicTrail(e.App, asset) {
+			return e.NotFoundError("", nil)
+		}
+		if asset.GetString("storage_mode") == immich.PhotoModeLinkPublic && assetLinkedToPublicTrail(e.App, asset) {
+			if err := immich.MaterializeRemoteAsset(e.App, asset); err != nil {
+				if markErr := immich.MarkRemoteStatus(e.App, asset, "inaccessible", err); markErr != nil {
+					e.App.Logger().Warn("failed to update immich asset remote status", "asset", asset.Id, "error", markErr)
+				}
+				return e.NotFoundError("", err)
+			}
+			if fileURL := assetFileURL(asset); fileURL != "" {
+				return e.Redirect(http.StatusFound, fileURL)
+			}
+			return e.NotFoundError("", errors.New("materialized asset has no file"))
+		}
+
+		resp, err := immich.OpenRemoteAsset(e.App, asset)
+		if resp != nil {
+			defer resp.Body.Close()
+		}
+		if err != nil {
+			status := "inaccessible"
+			if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
+				status = "missing"
+			}
+			if markErr := immich.MarkRemoteStatus(e.App, asset, status, err); markErr != nil {
+				e.App.Logger().Warn("failed to update immich asset remote status", "asset", asset.Id, "error", markErr)
+			}
+			return e.NotFoundError("", err)
+		}
+
+		if err := immich.MarkRemoteStatus(e.App, asset, "available", nil); err != nil {
+			e.App.Logger().Warn("failed to update immich asset remote status", "asset", asset.Id, "error", err)
+		}
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		e.Response.Header().Set("Cache-Control", "private, max-age=300")
+		return e.Stream(http.StatusOK, contentType, resp.Body)
 	})
 
 	se.Router.POST("/integration/strava/token", func(e *core.RequestEvent) error {

@@ -30,7 +30,10 @@ import { json, type RequestEvent } from '@sveltejs/kit';
  */
 export async function PUT(event: RequestEvent) {
     try {        
-        const r = await uploadCreate<Trail>(event, Collection.trails)
+        let r = await uploadCreate<Trail>(event, Collection.trails)
+        r = await event.locals.pb.collection(Collection.trails).getOne<Trail>(r.id!, {
+            expand: event.url.searchParams.get("expand") ?? undefined,
+        });
         enrichRecord(r);
         return json(r);
     } catch (e) {
@@ -42,5 +45,18 @@ function enrichRecord(r: Trail) {
     r.date = r.date?.substring(0, 10) ?? "";
     for (const log of r.expand?.summit_logs_via_trail ?? []) {
         log.date = log.date.substring(0, 10);
+        log.photos = assetPhotos(log.expand?.assets_via_summit_log);
     }
+    for (const waypoint of r.expand?.waypoints_via_trail ?? []) {
+        waypoint.photos = assetPhotos(waypoint.expand?.assets_via_waypoint);
+    }
+    r.photos = assetPhotos(r.expand?.assets_via_trail);
+}
+
+function assetPhotos(assets?: { id: string; collectionId: string; type: string; file?: string; storage_mode?: string }[]) {
+    return assets
+        ?.filter((asset) => asset.type === "photo" && (asset.file || (asset.storage_mode && asset.storage_mode !== "copy")))
+        .map((asset) => asset.file
+            ? `/api/v1/files/${asset.collectionId}/${asset.id}/${asset.file}`
+            : `/api/v1/assets/${asset.id}/file`) ?? [];
 }

@@ -4,6 +4,7 @@ import { type AuthRecord, type ListResult } from "pocketbase";
 import { get, writable, type Writable } from "svelte/store";
 import { currentUser } from "./user_store";
 import { isURL, objectToFormData } from "$lib/util/file_util";
+import { asset_photo_url, assets_create, assets_delete_removed } from "./asset_store";
 
 export const summitLog: Writable<SummitLog> = writable(new SummitLog(new Date().toISOString().substring(0, 10)));
 export const summitLogs: Writable<SummitLog[]> = writable([]);
@@ -13,7 +14,7 @@ export async function summit_logs_index(filter?: SummitLogFilter, handle?: strin
     const r = await f('/api/v1/summit-log?' + new URLSearchParams({
         ...(filter ? { filter: buildFilterText(filter) } : {}),
         perPage: "-1",
-        expand: "trail.category,author",
+        expand: "trail.category,author,assets_via_summit_log",
         sort: "+date",
         ...(handle ? { handle } : {})
     }), {
@@ -40,22 +41,15 @@ export async function summit_logs_create(summitLog: SummitLog, f: (url: RequestI
 
     summitLog.author = user.actor
 
-    const formData = objectToFormData(summitLog, ["expand"])
+    const formData = objectToFormData(summitLog, ["expand", "photos", "_photos", "_gpx"])
 
     if (summitLog._gpx && summitLog._gpx instanceof File) {
         formData.append("gpx", summitLog._gpx)
     }
 
 
-    if (summitLog._photos && summitLog._photos.length) {
-
-        for (const photo of summitLog._photos) {
-            formData.append("photos", photo)
-        }
-    }
-
     let r = await f('/api/v1/summit-log/form?' + new URLSearchParams({
-        expand: "author"
+        expand: "author,assets_via_summit_log"
     }), {
         method: 'PUT',
         body: formData,
@@ -68,6 +62,14 @@ export async function summit_logs_create(summitLog: SummitLog, f: (url: RequestI
 
     let model: SummitLog = await r.json();
 
+    if (summitLog._photos?.length) {
+        const assets = await assets_create(summitLog._photos, {
+            trail: model.trail,
+            summit_log: model.id,
+        }, f);
+        model.photos = assets.map(asset_photo_url);
+    }
+
     return model;
 }
 
@@ -79,17 +81,7 @@ export async function summit_logs_update(oldSummitLog: SummitLog, newSummitLog: 
 
     newSummitLog.author = user.actor
 
-    const formData = objectToFormData(newSummitLog, ["expand", "gpx", "_gpx"])
-
-    for (const photo of newSummitLog._photos ?? []) {
-        formData.append("photos", photo)
-    }
-
-    const deletedPhotos = oldSummitLog.photos.filter(oldPhoto => !newSummitLog.photos.find(newPhoto => newPhoto === oldPhoto));
-
-    for (const deletedPhoto of deletedPhotos) {
-        formData.append("photos-", deletedPhoto.replace(/^.*[\\/]/, ''));
-    }
+    const formData = objectToFormData(newSummitLog, ["expand", "gpx", "photos", "_photos", "_gpx"])
 
     if (newSummitLog._gpx) {
         formData.append("gpx", newSummitLog._gpx);
@@ -98,7 +90,7 @@ export async function summit_logs_update(oldSummitLog: SummitLog, newSummitLog: 
     }
 
     let r = await fetch('/api/v1/summit-log/form/' + newSummitLog.id + '?' + new URLSearchParams({
-        expand: "author"
+        expand: "author,assets_via_summit_log"
     }), {
         method: 'POST',
         body: formData,
@@ -109,7 +101,17 @@ export async function summit_logs_update(oldSummitLog: SummitLog, newSummitLog: 
         throw new APIError(r.status, response.message, response.detail)
     }
 
-    return await r.json();
+    const model: SummitLog = await r.json();
+    await assets_delete_removed(oldSummitLog.photos, newSummitLog.photos);
+    if (newSummitLog._photos?.length) {
+        const assets = await assets_create(newSummitLog._photos, {
+            trail: model.trail,
+            summit_log: model.id,
+        });
+        model.photos = [...newSummitLog.photos, ...assets.map(asset_photo_url)];
+    }
+
+    return model;
 }
 
 export async function summit_logs_delete(summitLog: SummitLog) {

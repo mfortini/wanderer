@@ -17,22 +17,35 @@
     import TextField from "../base/text_field.svelte";
     import Textarea from "../base/textarea.svelte";
     import PhotoPicker from "../trail/photo_picker.svelte";
+    import ImmichPhotoPickerModal from "../trail/immich_photo_picker_modal.svelte";
     import type { Waypoint } from "$lib/models/waypoint";
+
+    interface Candidate {
+        assetId: string;
+        lat: number;
+        lon: number;
+        originalFileName: string;
+        takenAt: string;
+        city: string;
+        country: string;
+        distance: number;
+        distanceFromStart: number;
+    }
 
     interface Props {
         children?: Snippet<[any]>;
-        onsave?: (waypoint: Waypoint) => void
+        onsave?: (waypoint: Waypoint) => void;
+        immichActive?: boolean;
     }
 
-    let { children, onsave }: Props = $props();
+    let { children, onsave, immichActive }: Props = $props();
 
     let modal: Modal;
-
-    export function openModal() {
-        modal.openModal();
-    }
+    let immichPickerModal: ImmichPhotoPickerModal = $state()!;
+    let pendingCandidates: Candidate[] = $state([]);
 
     const ClientWaypointCreateSchema = WaypointCreateSchema.extend({
+        photos: z.array(z.string()).default([]),
         _photos: z.array(z.instanceof(File)).optional(),
     });
 
@@ -42,8 +55,20 @@
         initialValues: $waypoint,
         extend: validator({ schema: ClientWaypointCreateSchema }),
         onSubmit: async (form) => {
-            onsave?.(form);
-
+            const wp = {
+                ...(form as Waypoint),
+                photos: $data.photos ?? [],
+                _photos: $data._photos ?? [],
+            } as Waypoint;
+            if (pendingCandidates.length > 0) {
+                wp._immichCandidates = pendingCandidates.map((c) => ({
+                    assetId: c.assetId,
+                    lat: c.lat,
+                    lon: c.lon,
+                    originalFileName: c.originalFileName,
+                }));
+            }
+            onsave?.(wp);
             modal.closeModal!();
         },
         transform: (values: unknown) => {
@@ -58,6 +83,7 @@
 
     $effect(() => {
         setFields(cloneDeep($waypoint));
+        pendingCandidates = [];
     });
 
     let filteredIcons = $derived(
@@ -94,6 +120,24 @@
                 });
             }
         });
+    }
+
+    function onImmichSelect(candidates: Candidate[]) {
+        pendingCandidates = [...pendingCandidates, ...candidates.filter(
+            (c) => !pendingCandidates.some((p) => p.assetId === c.assetId)
+        )];
+    }
+
+    function removePendingCandidate(assetId: string) {
+        pendingCandidates = pendingCandidates.filter((c) => c.assetId !== assetId);
+    }
+
+    const hasCoordinates = $derived(
+        !isNaN(parseFloat(String($data.lat))) && !isNaN(parseFloat(String($data.lon)))
+    );
+
+    export function openModal() {
+        modal.openModal();
     }
 
     const children_render = $derived(children);
@@ -143,10 +187,7 @@
                 ></TextField>
             </div>
             <div>
-                <label
-                    for="waypoint-photo-input"
-                    class="text-sm font-medium pb-1"
-                >
+                <label for="waypoint-photo-input" class="text-sm font-medium pb-1 block">
                     {$_("photos")}
                 </label>
                 <PhotoPicker
@@ -157,6 +198,9 @@
                     bind:photoFiles={$data._photos}
                     showThumbnailControls={false}
                     showExifControls={true}
+                    onimmich={immichActive && hasCoordinates ? () => immichPickerModal.openModal() : undefined}
+                    immichPreviews={pendingCandidates.map(c => ({ assetId: c.assetId, filename: c.originalFileName }))}
+                    onimmichdelete={removePendingCandidate}
                 ></PhotoPicker>
             </div>
         </form>
@@ -172,3 +216,12 @@
         </div>
     {/snippet}
 </Modal>
+
+{#if immichActive}
+    <ImmichPhotoPickerModal
+        bind:this={immichPickerModal}
+        lat={parseFloat(String($data.lat)) || 0}
+        lon={parseFloat(String($data.lon)) || 0}
+        onselect={onImmichSelect}
+    />
+{/if}

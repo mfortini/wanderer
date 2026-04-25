@@ -4,7 +4,6 @@ import type { Trail } from "$lib/models/trail";
 import { APIError, Collection, handleError, remove, show, update } from "$lib/util/api_util";
 import { objectToFormData } from "$lib/util/file_util";
 import { json, type RequestEvent } from "@sveltejs/kit";
-import type PocketBase from "pocketbase";
 import { ClientResponseError } from "pocketbase";
 
 /**
@@ -140,13 +139,7 @@ export async function GET(event: RequestEvent) {
                 t.expand!.category = category as any
             } catch (e) { }
 
-            const formData = objectToFormData({ ...t, id: t.id, gpx: undefined, expand: undefined, photos: [], waypoints: [], tags: [], category: categoryId })
-            if (t.photos.length) {
-                const photoURL = t.photos[t.thumbnail ?? 0]
-                let response = await event.fetch(photoURL, { method: "GET" })
-                const photo = await response.blob()
-                formData.append("photos", photo)
-            }
+            const formData = objectToFormData({ ...t, id: t.id, gpx: undefined, expand: undefined, photos: undefined, waypoints: [], tags: [], category: categoryId })
             if (t.gpx) {
                 const gpxURL = t.gpx
                 const response = await event.fetch(gpxURL, { method: "GET" })
@@ -162,7 +155,7 @@ export async function GET(event: RequestEvent) {
         }
 
         // remove time from dates
-        await enrichRecord(event.locals.pb, t);
+        await enrichRecord(t);
 
         // sort waypoints by distance
         t.expand?.waypoints_via_trail?.sort((a, b) => (a.distance_from_start ?? 0) - (b.distance_from_start ?? 0))
@@ -175,7 +168,7 @@ export async function GET(event: RequestEvent) {
 export async function POST(event: RequestEvent) {
     try {
         const r = await update<Trail>(event, TrailUpdateSchema, Collection.trails)
-        await enrichRecord(event.locals.pb, r)
+        await enrichRecord(r)
         return json(r);
     } catch (e: any) {
         return handleError(e)
@@ -193,9 +186,22 @@ export async function DELETE(event: RequestEvent) {
 
 
 
-async function enrichRecord(pb: PocketBase, r: Trail) {
+async function enrichRecord(r: Trail) {
     r.date = r.date?.substring(0, 10) ?? "";
     for (const log of r.expand?.summit_logs_via_trail ?? []) {
         log.date = log.date.substring(0, 10);
+        log.photos = assetPhotos(log.expand?.assets_via_summit_log);
     }
+    for (const waypoint of r.expand?.waypoints_via_trail ?? []) {
+        waypoint.photos = assetPhotos(waypoint.expand?.assets_via_waypoint);
+    }
+    r.photos = assetPhotos(r.expand?.assets_via_trail);
+}
+
+function assetPhotos(assets?: { id: string; collectionId: string; type: string; file?: string; storage_mode?: string }[]) {
+    return assets
+        ?.filter((asset) => asset.type === "photo" && (asset.file || (asset.storage_mode && asset.storage_mode !== "copy")))
+        .map((asset) => asset.file
+            ? `/api/v1/files/${asset.collectionId}/${asset.id}/${asset.file}`
+            : `/api/v1/assets/${asset.id}/file`) ?? [];
 }

@@ -270,6 +270,7 @@ func TrailFromActivity(activity pub.Activity, app core.App, actor *core.Record) 
 		record.Set("category", categoryRecord.Id)
 	}
 
+	photoFiles := []*filesystem.File{}
 	if t.Attachment != nil {
 
 		attachments, err := pub.ToItemCollection(t.Attachment)
@@ -292,16 +293,14 @@ func TrailFromActivity(activity pub.Activity, app core.App, actor *core.Record) 
 		}
 
 		if len(photoURLs) > 0 {
-			photos := []*filesystem.File{}
-			for i, purl := range photoURLs {
+			photoFiles = make([]*filesystem.File, 0, len(photoURLs))
+			for _, purl := range photoURLs {
 				photo, err := filesystem.NewFileFromURL(context.Background(), purl)
 				if err != nil {
 					continue
 				}
-				photos[i] = photo
+				photoFiles = append(photoFiles, photo)
 			}
-
-			record.Set("photos", photos)
 		}
 
 		if gpxURL != "" {
@@ -314,7 +313,24 @@ func TrailFromActivity(activity pub.Activity, app core.App, actor *core.Record) 
 		}
 	}
 
-	return record, app.Save(record)
+	if err := app.Save(record); err != nil {
+		return nil, err
+	}
+
+	for _, photo := range photoFiles {
+		if err := CreatePhotoAsset(app, PhotoAssetInput{
+			Author: actor.Id,
+			Trail:  record.Id,
+			File:   photo,
+			Metadata: map[string]any{
+				"source": "activitypub",
+			},
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	return record, nil
 }
 
 func ObjectFromTrail(app core.App, trail *core.Record, mentions *pub.ItemCollection) (*pub.Object, error) {
@@ -391,7 +407,10 @@ func ObjectFromTrail(app core.App, trail *core.Record, mentions *pub.ItemCollect
 		tags.Append(hashtag)
 	}
 
-	photos := trail.GetStringSlice("photos")
+	photos, err := PhotoAssetURLs(app, "trail", trail.Id, origin, 3)
+	if err != nil {
+		return nil, err
+	}
 
 	gpx := ""
 	if trail.GetString("gpx") != "" {
@@ -400,12 +419,10 @@ func ObjectFromTrail(app core.App, trail *core.Record, mentions *pub.ItemCollect
 
 	attachments := make(pub.ItemCollection, max(len(photos), 2))
 	for i := range min(len(photos), 3) {
-		iri := fmt.Sprintf("%s/api/v1/files/trails/%s/%s", origin, trail.Id, photos[i])
-
 		attachments[i] = pub.Image{
 			Type:      pub.ImageType,
 			MediaType: "image/jpeg",
-			URL:       pub.IRI(iri),
+			URL:       pub.IRI(photos[i]),
 		}
 	}
 	if gpx != "" {

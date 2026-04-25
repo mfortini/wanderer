@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"pocketbase/integrations/immich"
+	"pocketbase/util"
+
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/filesystem"
@@ -68,6 +71,10 @@ func SyncKomoot(app core.App) error {
 			app.Logger().Warn(warning)
 			continue
 		}
+		immichIntegration, err := immich.ParseIntegration(i.GetString("immich"), encryptionKey)
+		if err != nil {
+			app.Logger().Warn(fmt.Sprintf("unable to parse Immich integration for user '%s': %v", userId, err))
+		}
 		totalPages := 1
 		for page := 0; page < totalPages; page++ {
 			tours, tp, err := k.fetchTours(page)
@@ -79,7 +86,7 @@ func SyncKomoot(app core.App) error {
 			}
 			totalPages = tp
 
-			allAlreadySynced, err := syncTrailWithTours(app, k, komootIntegration, userId, actorId, tours)
+			allAlreadySynced, err := syncTrailWithTours(app, k, komootIntegration, userId, actorId, tours, immichIntegration)
 			if err != nil {
 				warning := fmt.Sprintf("error syncing komoot tours with trails: %v\n", err)
 				fmt.Print(warning)
@@ -188,7 +195,7 @@ func (k *KomootApi) fetchDetailedTour(tour KomootTour) (*DetailedKomootTour, err
 // when every tour on this page was already imported, so the caller can stop paginating
 // early during incremental syncs. Tours skipped due to type filters do NOT count as
 // synced - only tours already present in the DB do.
-func syncTrailWithTours(app core.App, k *KomootApi, i KomootIntegration, user string, actor string, tours []KomootTour) (bool, error) {
+func syncTrailWithTours(app core.App, k *KomootApi, i KomootIntegration, user string, actor string, tours []KomootTour, immichCfg *immich.Integration) (bool, error) {
 	allAlreadySynced := true
 	for _, tour := range tours {
 		trails, err := app.FindRecordsByFilter("trails", "external_id = {:id}", "", 1, 0, dbx.Params{"id": strconv.Itoa(int(tour.ID))})
@@ -222,6 +229,11 @@ func syncTrailWithTours(app core.App, k *KomootApi, i KomootIntegration, user st
 		if err != nil {
 			app.Logger().Warn(fmt.Sprintf("Unable to create waypoints for tour '%s': %v", tour.Name, err))
 			continue
+		}
+		if immichCfg != nil && immichCfg.ShouldUseFor("komoot") && gpx != nil {
+			if err := immich.AttachWaypointsFromGPX(app, immichCfg, user, trailid, gpx); err != nil {
+				app.Logger().Warn(fmt.Sprintf("Unable to import Immich assets for tour '%s': %v", tour.Name, err))
+			}
 		}
 
 	}
@@ -306,15 +318,27 @@ func createTrailFromTour(app core.App, k *KomootApi, detailedTour *DetailedKomoo
 		"author":            actor,
 	})
 
-	if photos != nil {
-		record.Set("photos", photos)
-	}
 	if gpx != nil {
 		record.Set("gpx", gpx)
 	}
 
 	if err := app.Save(record); err != nil {
 		return "", err
+	}
+
+	for _, photo := range photos {
+		if err := util.CreatePhotoAsset(app, util.PhotoAssetInput{
+			Author: actor,
+			Trail:  record.Id,
+			Lat:    detailedTour.StartPoint.Lat,
+			Lon:    detailedTour.StartPoint.Lng,
+			File:   photo,
+			Metadata: map[string]any{
+				"source": "komoot",
+			},
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	if detailedTour.Type == "tour_recorded" {
@@ -380,12 +404,24 @@ func createWaypointsFromTour(app core.App, tour *DetailedKomootTour, user string
 			"trail":               trailid,
 		})
 
-		if photos != nil {
-			record.Set("photos", photos)
-		}
-
 		if err := app.Save(record); err != nil {
 			return err
+		}
+
+		for _, photo := range photos {
+			if err := util.CreatePhotoAsset(app, util.PhotoAssetInput{
+				Author:   user,
+				Trail:    trailid,
+				Waypoint: record.Id,
+				Lat:      wpLat,
+				Lon:      wpLon,
+				File:     photo,
+				Metadata: map[string]any{
+					"source": "komoot",
+				},
+			}); err != nil {
+				return err
+			}
 		}
 	}
 

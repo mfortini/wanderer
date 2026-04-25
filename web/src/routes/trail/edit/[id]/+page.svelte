@@ -12,6 +12,7 @@
     import PhotoPicker from "$lib/components/trail/photo_picker.svelte";
     import WaypointCard from "$lib/components/waypoint/waypoint_card.svelte";
     import WaypointModal from "$lib/components/waypoint/waypoint_modal.svelte";
+    import ImmichWaypointModal from "$lib/components/trail/immich_waypoint_modal.svelte";
     import { SummitLogCreateSchema } from "$lib/models/api/summit_log_schema.js";
     import { TrailCreateSchema } from "$lib/models/api/trail_schema.js";
     import { WaypointCreateSchema } from "$lib/models/api/waypoint_schema.js";
@@ -34,6 +35,7 @@
         trails_create,
         trails_update,
     } from "$lib/stores/trail_store.js";
+
     import {
         valhallaStore,
         calculateRouteBetween,
@@ -110,6 +112,7 @@
     let lists = $state(untrack(() => data.lists));
 
     let waypointModal: WaypointModal;
+    let immichWaypointModal: ImmichWaypointModal;
     let summitLogModal: SummitLogModal;
     let listSelectModal: ListSearchModal;
 
@@ -132,16 +135,25 @@
 
     let croppedGPX: GPX | null = null;
 
+    const ClientSummitLogCreateSchema = SummitLogCreateSchema.extend({
+        photos: z.array(z.string()).default([]),
+    });
+
+    const ClientWaypointCreateSchema = WaypointCreateSchema.extend({
+        photos: z.array(z.string()).default([]),
+    });
+
     const ClientTrailCreateSchema = TrailCreateSchema.extend({
+        photos: z.array(z.string()).default([]),
         expand: z
             .object({
                 gpx_data: z.string().optional(),
                 summit_logs_via_trail: z
-                    .array(SummitLogCreateSchema)
+                    .array(ClientSummitLogCreateSchema)
                     .optional(),
                 waypoints_via_trail: z
                     .array(
-                        WaypointCreateSchema.extend({
+                        ClientWaypointCreateSchema.extend({
                             marker: z.any().optional(),
                         }),
                     )
@@ -157,6 +169,15 @@
     });
 
     let savedAtLeastOnce = $state(false);
+
+    type ImmichPending = {
+        waypointId: string;
+        assetIds: string[];
+        lat: number;
+        lon: number;
+        name?: string;
+    };
+    let pendingImmich: ImmichPending[] = [];
 
     let tagItems: ComboboxItem[] = $state([]);
 
@@ -227,6 +248,7 @@
                         ?.trkpt?.at(0)?.$.lon;
                 }
 
+                let savedTrail: Trail;
                 if (page.params.id === "new" && !savedAtLeastOnce) {
                     const createdTrail = await trails_create(
                         form as Trail,
@@ -235,6 +257,7 @@
                     );
                     setFields(createdTrail);
                     trail.set(createdTrail);
+                    savedTrail = createdTrail;
                 } else {
                     const updatedTrail = await trails_update(
                         $trail,
@@ -243,8 +266,31 @@
                         gpxFile,
                     );
                     setFields(updatedTrail);
+                    savedTrail = updatedTrail;
                 }
                 photoFiles = [];
+
+                if (pendingImmich.length > 0 && data.immichActive) {
+                    await Promise.all(
+                        pendingImmich.map(async (pending) => {
+                            const waypointId = resolveSavedWaypointId(pending, savedTrail);
+                            const response = await fetch("/api/v1/integration/immich/import-to-waypoint", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    trailId: savedTrail.id,
+                                    waypointId,
+                                    assetIds: pending.assetIds,
+                                }),
+                            });
+                            if (!response.ok) {
+                                const error = await response.json().catch(() => ({}));
+                                throw new Error(error.message ?? "Immich import-to-waypoint failed");
+                            }
+                        }),
+                    );
+                    pendingImmich = [];
+                }
 
                 savedAtLeastOnce = true;
                 show_toast({
@@ -458,22 +504,82 @@
     }
 
     function saveWaypoint(savedWaypoint: Waypoint) {
-        let editedWaypointIndex =
+        const candidates = savedWaypoint._immichCandidates;
+
+        const editedWaypointIndex =
             $formData.expand!.waypoints_via_trail?.findIndex(
                 (s) => s.id == savedWaypoint.id,
             ) ?? -1;
 
         if (editedWaypointIndex >= 0) {
             $formData.expand!.waypoints_via_trail![editedWaypointIndex] = savedWaypoint;
+            $formData.expand!.waypoints_via_trail = [
+                ...($formData.expand!.waypoints_via_trail ?? []),
+            ];
         } else {
             savedWaypoint.id = cryptoRandomString({ length: 15 });
             $formData.expand!.waypoints_via_trail = [
                 ...($formData.expand!.waypoints_via_trail ?? []),
                 savedWaypoint,
             ];
-
-            // updateTrailOnMap();
         }
+
+        if (candidates?.length) {
+            const existing = pendingImmich.findIndex(p => p.waypointId === savedWaypoint.id);
+            const pending = {
+                waypointId: savedWaypoint.id!,
+                assetIds: candidates.map(c => c.assetId),
+                lat: savedWaypoint.lat,
+                lon: savedWaypoint.lon,
+                name: savedWaypoint.name,
+            };
+            if (existing >= 0) {
+                pendingImmich[existing] = pending;
+            } else {
+                pendingImmich.push(pending);
+            }
+        }
+    }
+
+    function resolveSavedWaypointId(pending: ImmichPending, savedTrail: Trail): string {
+        const waypoints = savedTrail.expand?.waypoints_via_trail ?? [];
+        if (waypoints.some((wp) => wp.id === pending.waypointId)) {
+            return pending.waypointId;
+        }
+
+        const match = waypoints.find((wp) =>
+            Math.abs(Number(wp.lat) - Number(pending.lat)) < 0.0000001 &&
+            Math.abs(Number(wp.lon) - Number(pending.lon)) < 0.0000001 &&
+            (wp.name ?? "") === (pending.name ?? "")
+        );
+        if (match?.id) {
+            return match.id;
+        }
+
+        throw new Error("Unable to resolve saved waypoint for Immich import");
+    }
+
+    function onImmichImport(importedWaypoints: Waypoint[]) {
+        if (!importedWaypoints.length) return;
+        // Backend records don't carry the synthetic photos field — initialize it so
+        // assets_delete_removed doesn't receive undefined when these waypoints are updated.
+        const normalized = importedWaypoints.map(wp => ({ ...wp, photos: wp.photos ?? [] }));
+        // Add to form (new state)
+        $formData.expand!.waypoints_via_trail = [
+            ...($formData.expand!.waypoints_via_trail ?? []),
+            ...normalized,
+        ];
+        // Add to trail store (old state) so compareObjectArrays won't try to re-create them
+        trail.update((t) => ({
+            ...t,
+            expand: {
+                ...t.expand,
+                waypoints_via_trail: [
+                    ...(t.expand?.waypoints_via_trail ?? []),
+                    ...normalized,
+                ],
+            },
+        }));
     }
 
     function moveMarker(marker: M.Marker, wpId?: string) {
@@ -1396,6 +1502,16 @@
             onclick={() => openPhotoBrowser()}
             ><i class="fa fa-image mr-2"></i>{$_("from-photos")}</button
         >
+        {#if data.immichActive}
+            <Button
+                secondary={true}
+                tooltip={$_("save-your-trail-first")}
+                disabled={page.params.id === "new" && !savedAtLeastOnce}
+                type="button"
+                onclick={() => immichWaypointModal.openModal()}
+                ><img src="/immich.svg" alt="Immich" class="w-4 h-4 mr-2 inline-block" />{$_("import-from-immich")}</Button
+            >
+        {/if}
         <input
             type="file"
             id="waypoint-photo-input"
@@ -1517,7 +1633,16 @@
         </div>
     </div>
 </main>
-<WaypointModal bind:this={waypointModal} onsave={saveWaypoint}></WaypointModal>
+<WaypointModal
+    bind:this={waypointModal}
+    onsave={saveWaypoint}
+    immichActive={data.immichActive}
+/>
+<ImmichWaypointModal
+    bind:this={immichWaypointModal}
+    trailId={$formData.id ?? ""}
+    onsave={onImmichImport}
+></ImmichWaypointModal>
 <SummitLogModal bind:this={summitLogModal} onsave={(log) => saveSummitLog(log)}
 ></SummitLogModal>
 <ListSearchModal

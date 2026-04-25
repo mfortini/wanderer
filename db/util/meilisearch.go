@@ -19,14 +19,15 @@ import (
 )
 
 func documentFromTrailRecord(app core.App, r *core.Record, author *core.Record, includeShares bool) (map[string]interface{}, error) {
-	photos := r.GetStringSlice("photos")
 	thumbnail := ""
-	if len(photos) > 0 {
-		thumbnailIndex := r.GetInt("thumbnail")
-		if thumbnailIndex >= len(photos) {
-			thumbnailIndex = 0
+	assets, err := app.FindRecordsByFilter("assets", "trail={:trail} && type='photo'", "-created", 1, 0, dbx.Params{"trail": r.Id})
+	if err == nil && len(assets) > 0 {
+		a := assets[0]
+		if file := a.GetString("file"); file != "" {
+			thumbnail = fmt.Sprintf("/api/v1/files/%s/%s/%s", a.Collection().Id, a.Id, file)
+		} else if a.GetString("storage_mode") != "" && a.GetString("storage_mode") != "copy" {
+			thumbnail = fmt.Sprintf("/api/v1/assets/%s/file", a.Id)
 		}
-		thumbnail = photos[thumbnailIndex]
 	}
 
 	tagRecords := r.ExpandedAll("tags")

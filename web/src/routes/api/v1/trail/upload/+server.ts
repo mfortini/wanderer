@@ -100,6 +100,15 @@ export async function PUT(event: RequestEvent) {
             console.error(e)
             return handleError(e)
         }
+
+        if (trail.id && event.locals.user) {
+            await event.locals.pb.send("/integration/immich/attach", {
+                method: "POST",
+                body: JSON.stringify({ trailId: trail.id, provider: "upload" }),
+                headers: { "Content-Type": "application/json" },
+            }).catch(() => {});
+        }
+
         return json(trail);
 
     } catch (e: any) {

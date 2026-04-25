@@ -8,6 +8,7 @@ import type { Tag } from "./tag";
 import type { TrailLike } from "./trail_like";
 import type { TrailShare } from "./trail_share";
 import { Waypoint } from "./waypoint";
+import type { Asset } from "./asset";
 
 class Trail {
     id?: string;
@@ -38,6 +39,7 @@ class Trail {
         category?: Category;
         waypoints_via_trail?: Waypoint[]
         summit_logs_via_trail?: SummitLog[]
+        assets_via_trail?: Asset[]
         author?: Actor
         comments_via_trail?: Comment[]
         gpx_data?: string
@@ -248,4 +250,3 @@ export const defaultTrailSearchAttributes = [
 export { Trail };
 
 export type { TrailBoundingBox, TrailFilter, TrailFilterValues, TrailSearchResult };
-

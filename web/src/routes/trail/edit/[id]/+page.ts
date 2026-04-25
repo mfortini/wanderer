@@ -1,6 +1,7 @@
 import { Trail } from "$lib/models/trail";
 import { categories_index } from "$lib/stores/category_store";
 import { lists_index } from "$lib/stores/list_store";
+import { integrations_index } from "$lib/stores/integration_store";
 import { trails_show } from "$lib/stores/trail_store";
 import { currentUser } from "$lib/stores/user_store";
 import { error, type Load } from "@sveltejs/kit";
@@ -29,5 +30,8 @@ export const load: Load = async ({ params, fetch, url }) => {
         trail = await trails_show(params.id, undefined, url.searchParams.get("share") ?? undefined, true, fetch);
     }
 
-    return { trail: trail, lists: lists }
+    const integrationList = user ? await integrations_index(fetch).catch(() => []) : [];
+    const immichActive = integrationList.length > 0 && integrationList[0].immich?.active === true;
+
+    return { trail, lists, immichActive };
 };

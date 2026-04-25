@@ -22,23 +22,23 @@
 
     let imgSrc: string[] = $state([]);
     $effect(() => {
-        if (waypoint.photos?.length) {
-            imgSrc = waypoint.photos
-                .filter((_, i) => i < 3)
-                .reverse()
-                .map((p) => getFileURL(waypoint, p));
-        } else if (waypoint._photos?.length && browser) {
+        const persistedPhotos = (waypoint.photos ?? [])
+            .map((p) => getFileURL(waypoint, p));
+        const immichPhotos = (waypoint._immichCandidates ?? [])
+            .map((candidate) => `/api/v1/integration/immich/thumbnail/${candidate.assetId}`);
+        const immediatePhotos = [...persistedPhotos, ...immichPhotos];
+
+        imgSrc = immediatePhotos.slice(-3).reverse();
+
+        if (waypoint._photos?.length && browser) {
             Promise.all(
                 waypoint._photos
-                    .filter((_, i) => i < 3)
                     .map(async (f) => {
                         return await readAsDataURLAsync(f);
                     }),
             ).then((v) => {
-                imgSrc = v;
+                imgSrc = [...immediatePhotos, ...v].slice(-3).reverse();
             });
-        } else {
-            imgSrc = [];
         }
     });
 

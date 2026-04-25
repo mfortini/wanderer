@@ -10,6 +10,7 @@ import type { Hits } from "meilisearch";
 import { type AuthRecord, type ListResult, type RecordModel } from "pocketbase";
 import { get, writable, type Writable } from "svelte/store";
 import { summit_logs_create, summit_logs_delete, summit_logs_update } from "./summit_log_store";
+import { assets_create, assets_delete_removed } from "./asset_store";
 import { tags_create } from "./tag_store";
 import { currentUser } from "./user_store";
 import { waypoints_create, waypoints_delete, waypoints_update } from "./waypoint_store";
@@ -22,7 +23,7 @@ export const editTrail: Writable<Trail> = writable(new Trail(""));
 export async function trails_index(perPage: number = 21, random: boolean = false, f: (url: RequestInfo | URL, config?: RequestInit) => Promise<Response> = fetch) {
     const r = await f('/api/v1/trail?' + new URLSearchParams({
         "perPage": perPage.toString(),
-        expand: "category,waypoints_via_trail,summit_logs_via_trail,tags",
+        expand: "category,assets_via_trail,waypoints_via_trail,waypoints_via_trail.assets_via_waypoint,summit_logs_via_trail,summit_logs_via_trail.assets_via_summit_log,tags",
         sort: random ? "@random" : "",
     }), {
         method: 'GET',
@@ -137,7 +138,7 @@ export async function trails_search_bounding_box(northEast: M.LngLat, southWest:
 export async function trails_show(id: string, handle?: string, share?: string, loadGPX?: boolean, f: (url: RequestInfo | URL, config?: RequestInit) => Promise<Response> = fetch) {
 
     const r = await f(`/api/v1/trail/${id}?` + new URLSearchParams({
-        expand: "category,waypoints_via_trail,summit_logs_via_trail,summit_logs_via_trail.author,trail_share_via_trail.actor,trail_like_via_trail,tags,author",
+        expand: "category,assets_via_trail,waypoints_via_trail,waypoints_via_trail.assets_via_waypoint,summit_logs_via_trail,summit_logs_via_trail.assets_via_summit_log,summit_logs_via_trail.author,trail_share_via_trail.actor,trail_like_via_trail,tags,author",
         ...(handle ? { handle } : {}),
         ...(share ? { share } : {})
     }), {
@@ -197,18 +198,14 @@ export async function trails_create(trail: Trail, photos: File[], gpx: File | Bl
 
     trail.author = user.actor
 
-    const formData = objectToFormData(trail)
+    const formData = objectToFormData(trail, ["photos"])
 
     if (gpx) {
         formData.set("gpx", gpx);
     }
 
-    for (const photo of photos) {
-        formData.set("photos", photo)
-    }
-
     let r = await f(`/api/v1/trail/form?` + new URLSearchParams({
-        expand: "category,waypoints_via_trail,summit_logs_via_trail,trail_share_via_trail,tags",
+        expand: "category,assets_via_trail,waypoints_via_trail,waypoints_via_trail.assets_via_waypoint,summit_logs_via_trail,summit_logs_via_trail.assets_via_summit_log,trail_share_via_trail,tags",
     }), {
         method: 'PUT',
         body: formData,
@@ -221,6 +218,14 @@ export async function trails_create(trail: Trail, photos: File[], gpx: File | Bl
 
     let model: Trail = await r.json();
 
+    if (photos.length) {
+        await assets_create(photos, {
+            trail: model.id,
+            lat: model.lat,
+            lon: model.lon,
+        }, f);
+    }
+
     for (const summitLog of trail.expand?.summit_logs_via_trail ?? []) {
         summitLog.trail = model.id!;
         await summit_logs_create(summitLog, f);
@@ -232,6 +237,13 @@ export async function trails_create(trail: Trail, photos: File[], gpx: File | Bl
             ...wp,
             marker: undefined,
         }, f, user);
+    }
+
+    const refreshed = await f(`/api/v1/trail/${model.id}?` + new URLSearchParams({
+        expand: "category,assets_via_trail,waypoints_via_trail,waypoints_via_trail.assets_via_waypoint,summit_logs_via_trail,summit_logs_via_trail.assets_via_summit_log,trail_share_via_trail,tags",
+    }));
+    if (refreshed.ok) {
+        model = await refreshed.json();
     }
 
     return model;
@@ -295,27 +307,14 @@ export async function trails_update(oldTrail: Trail, newTrail: Trail, photos?: F
         newTrail.tags = newTrail.tags.filter(t => t != tag.id);
     }
 
-    const formData = objectToFormData(newTrail, ["expand", ...(exclude ?? [])])
+    const formData = objectToFormData(newTrail, ["expand", "photos", ...(exclude ?? [])])
 
     if (gpx) {
         formData.append("gpx", gpx);
     }
 
-    if (photos) {
-        for (const photo of photos) {
-            formData.append("photos+", photo)
-        }
-    }
-
-    const deletedPhotos = oldTrail.photos.filter(oldPhoto => !newTrail.photos.find(newPhoto => newPhoto === oldPhoto));
-
-    for (const deletedPhoto of deletedPhotos) {
-        formData.append("photos-", deletedPhoto.replace(/^.*[\\/]/, ''));
-    }
-
-
     let r = await fetch(`/api/v1/trail/form/${newTrail.id}?` + new URLSearchParams({
-        expand: "category,waypoints_via_trail,summit_logs_via_trail,trail_share_via_trail,tags",
+        expand: "category,assets_via_trail,waypoints_via_trail,waypoints_via_trail.assets_via_waypoint,summit_logs_via_trail,summit_logs_via_trail.assets_via_summit_log,trail_share_via_trail,tags",
     }), {
         method: 'POST',
         body: formData,
@@ -328,6 +327,17 @@ export async function trails_update(oldTrail: Trail, newTrail: Trail, photos?: F
 
 
     let model: Trail = await r.json();
+
+    await assets_delete_removed(oldTrail.photos, newTrail.photos);
+    model.photos = newTrail.photos;
+    if (photos?.length) {
+        await assets_create(photos, {
+            trail: model.id,
+            lat: model.lat,
+            lon: model.lon,
+        });
+        model = await trails_show(model.id!, undefined, undefined, true);
+    }
 
     for (const log of model.expand?.summit_logs_via_trail ?? []) {
         if (!log.expand) {

@@ -3583,6 +3583,355 @@
         }
       }
     },
+    "/api/v1/integration/immich/thumbnail/{id}": {
+      "get": {
+        "summary": "Proxy Immich thumbnail",
+        "tags": [
+          "Integrations"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Immich asset id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Thumbnail image stream",
+            "content": {
+              "image/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid asset id"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Thumbnail not available"
+          }
+        }
+      }
+    },
+    "/api/v1/integration/immich/import-to-waypoint": {
+      "post": {
+        "summary": "Import Immich photos to an existing waypoint",
+        "tags": [
+          "Integrations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "trailId",
+                  "waypointId",
+                  "assetIds"
+                ],
+                "properties": {
+                  "trailId": {
+                    "type": "string"
+                  },
+                  "waypointId": {
+                    "type": "string"
+                  },
+                  "assetIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Import accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or missing integration"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient permissions for waypoint"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/integration/immich/import": {
+      "post": {
+        "summary": "Import Immich photos as trail waypoints",
+        "tags": [
+          "Integrations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "trailId",
+                  "assetIds"
+                ],
+                "properties": {
+                  "trailId": {
+                    "type": "string"
+                  },
+                  "assetIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created or matched waypoints",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Waypoint"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient permissions for trail"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/integration/immich/check": {
+      "post": {
+        "summary": "Check Immich integration connection",
+        "tags": [
+          "Integrations"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "apiKey": {
+                    "type": "string"
+                  },
+                  "photoMode": {
+                    "type": "string",
+                    "enum": [
+                      "copy",
+                      "link_private",
+                      "link_public"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Connection check succeeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Connection check failed"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/integration/immich/candidates": {
+      "post": {
+        "summary": "Find Immich photo candidates",
+        "description": "Finds geotagged Immich photo candidates near a trail or coordinate for the authenticated user's Immich integration.",
+        "tags": [
+          "Integrations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "trailId": {
+                    "type": "string"
+                  },
+                  "lat": {
+                    "type": "number"
+                  },
+                  "lon": {
+                    "type": "number"
+                  },
+                  "yearsBack": {
+                    "type": "integer"
+                  },
+                  "doubleRadius": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Candidate photos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "hasTimestamps": {
+                      "type": "boolean"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    },
+                    "takenAfter": {
+                      "type": "string"
+                    },
+                    "candidates": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ImmichCandidate"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient permissions for trail"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/integration/immich/attach": {
+      "post": {
+        "summary": "Attach Immich photos to a trail",
+        "description": "Searches the authenticated user's Immich library and attaches matching photos to an existing trail for a provider.",
+        "tags": [
+          "Integrations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "trailId"
+                ],
+                "properties": {
+                  "trailId": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "strava",
+                      "komoot",
+                      "hammerhead",
+                      "upload"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Attach completed or skipped"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient permissions for trail"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
     "/api/v1/integration/hammerhead/upload": {
       "post": {
         "summary": "Upload via Hammerhead integration",
@@ -4395,6 +4744,164 @@
           },
           "500": {
             "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/assets": {
+      "put": {
+        "summary": "Upload photo assets",
+        "description": "Uploads one or more photo files and attaches them to a trail, waypoint, or summit log owned by the authenticated user.",
+        "tags": [
+          "Assets"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "files"
+                ],
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    }
+                  },
+                  "trail": {
+                    "type": "string",
+                    "description": "Trail id to attach assets to"
+                  },
+                  "waypoint": {
+                    "type": "string",
+                    "description": "Waypoint id to attach assets to"
+                  },
+                  "summit_log": {
+                    "type": "string",
+                    "description": "Summit log id to attach assets to"
+                  },
+                  "lat": {
+                    "type": "number"
+                  },
+                  "lon": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created assets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Asset"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid target relation"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Insufficient permissions for target trail"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/assets/{id}": {
+      "delete": {
+        "summary": "Delete asset",
+        "tags": [
+          "Assets"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "acknowledged": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid asset id"
+          },
+          "404": {
+            "description": "Asset not found"
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/v1/assets/{id}/file": {
+      "get": {
+        "summary": "Get remote asset file",
+        "description": "Streams a remote Immich-backed asset file when the authenticated user has access to the asset.",
+        "tags": [
+          "Assets"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset file stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid asset id"
+          },
+          "404": {
+            "description": "Asset not available"
           }
         }
       }
@@ -5344,14 +5851,6 @@
               "type": "string"
             }
           },
-          "photos-": {
-            "type": "string",
-            "description": "Remove photo by name"
-          },
-          "photos+": {
-            "type": "string",
-            "description": "Add photo by name"
-          },
           "thumbnail": {
             "type": "integer"
           },
@@ -5574,14 +6073,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "photos-": {
-            "type": "string",
-            "description": "Remove photo by name"
-          },
-          "photos+": {
-            "type": "string",
-            "description": "Add photo by name"
           }
         }
       },
@@ -5726,14 +6217,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "photos-": {
-            "type": "string",
-            "description": "Remove photo by name"
-          },
-          "photos+": {
-            "type": "string",
-            "description": "Add photo by name"
           }
         }
       },
@@ -6591,6 +7074,140 @@
             "items": {
               "type": "object"
             }
+          }
+        }
+      },
+      "Asset": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "storage_mode",
+          "author"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "collectionId": {
+            "type": "string"
+          },
+          "collectionName": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "photo"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "storage_mode": {
+            "type": "string",
+            "enum": [
+              "copy",
+              "link_private",
+              "link_public"
+            ]
+          },
+          "remote_status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "missing",
+              "inaccessible"
+            ]
+          },
+          "remote_checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "remote_missing_since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "remote_error": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "trail": {
+            "type": "string"
+          },
+          "waypoint": {
+            "type": "string"
+          },
+          "summit_log": {
+            "type": "string"
+          },
+          "external_provider": {
+            "type": "string"
+          },
+          "external_id": {
+            "type": "string"
+          },
+          "taken_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lon": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "ImmichCandidate": {
+        "type": "object",
+        "required": [
+          "assetId",
+          "originalFileName",
+          "takenAt",
+          "lat",
+          "lon",
+          "distance"
+        ],
+        "properties": {
+          "assetId": {
+            "type": "string"
+          },
+          "originalFileName": {
+            "type": "string"
+          },
+          "takenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lon": {
+            "type": "number"
+          },
+          "distance": {
+            "type": "number"
+          },
+          "pointLat": {
+            "type": "number"
+          },
+          "pointLon": {
+            "type": "number"
+          },
+          "distanceFromStart": {
+            "type": "number"
+          },
+          "city": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
           }
         }
       },

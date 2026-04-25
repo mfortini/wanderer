@@ -31,6 +31,16 @@ export interface HammerheadIntegration extends BaseIntegration {
     after?: string
 }
 
+export interface ImmichIntegration extends BaseIntegration {
+    url: string;
+    apiKey: string;
+    timeWindowMinutes: number;
+    maxDistanceMeters: number;
+    maxWaypoints: number;
+    photoMode: "copy" | "link_private" | "link_public";
+    providers: ("strava" | "komoot" | "hammerhead" | "upload")[];
+}
+
 
 export class Integration {
     id?: string;
@@ -38,11 +48,13 @@ export class Integration {
     strava?: StravaIntegration | null;
     komoot?: KomootIntegration | null;
     hammerhead?: HammerheadIntegration | null;
+    immich?: ImmichIntegration | null;
 
-    constructor(user: string, strava?: StravaIntegration, komoot?: KomootIntegration, hammerhead?: HammerheadIntegration) {
+    constructor(user: string, strava?: StravaIntegration, komoot?: KomootIntegration, hammerhead?: HammerheadIntegration, immich?: ImmichIntegration) {
         this.user = user;
         this.strava = strava;
         this.komoot = komoot;
         this.hammerhead = hammerhead;
+        this.immich = immich;
     }
 }
