@@ -53,7 +53,7 @@
     async function onSettingsSave(
         form: StravaIntegration | KomootIntegration | HammerheadIntegration | ImmichIntegration,
         key: "strava" | "komoot" | "hammerhead" | "immich",
-        materialize: boolean = false,
+        materialize: "all" | "public" | false = false,
     ): Promise<boolean> {
         try {
             if (key == "immich") {
@@ -82,9 +82,11 @@
             }
 
             if (key == "immich" && materialize) {
-                fetch("/api/v1/integration/immich/materialize-all", { method: "POST" }).catch(
-                    () => {},
-                );
+                fetch("/api/v1/integration/immich/materialize-all", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ publicOnly: materialize === "public" }),
+                }).catch(() => {});
             }
 
             show_toast({
