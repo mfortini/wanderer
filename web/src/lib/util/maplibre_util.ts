@@ -105,6 +105,7 @@ export function createMarkerFromWaypoint(waypoint: Waypoint, onDragEnd?: (marker
     const popup = new M.Popup({ offset: 25, maxWidth: "280px" }).setDOMContent(
         content
     );
+    bindExclusivePopup(popup);
     marker
         .setLngLat([waypoint.lon, waypoint.lat])
         .setPopup(popup)
@@ -119,6 +120,22 @@ export function createMarkerFromWaypoint(waypoint: Waypoint, onDragEnd?: (marker
     });
 
     return marker;
+}
+
+let exclusiveWaypointPopup: M.Popup | undefined;
+
+function bindExclusivePopup(popup: M.Popup) {
+    popup.on("open", () => {
+        if (exclusiveWaypointPopup && exclusiveWaypointPopup !== popup) {
+            exclusiveWaypointPopup.remove();
+        }
+        exclusiveWaypointPopup = popup;
+    });
+    popup.on("close", () => {
+        if (exclusiveWaypointPopup === popup) {
+            exclusiveWaypointPopup = undefined;
+        }
+    });
 }
 
 export function createAnchorMarker(lat: number, lon: number,
