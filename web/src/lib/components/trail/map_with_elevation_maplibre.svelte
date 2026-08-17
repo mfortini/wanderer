@@ -1139,6 +1139,22 @@
         @apply bg-background rounded-md shadow-xl p-0 overflow-hidden pr-5;
     }
 
+    :global(.waypoint-popup) {
+        @apply cursor-pointer;
+    }
+
+    :global(.waypoint-popup-photos) {
+        @apply mb-2 grid grid-cols-1 gap-1;
+    }
+
+    :global(.waypoint-popup-photos.multiple) {
+        @apply grid-cols-2;
+    }
+
+    :global(.waypoint-popup-media) {
+        @apply h-24 w-full rounded-md object-cover;
+    }
+
     :global(.maplibregl-popup-close-button) {
         top: 4px;
         right: 4px;
