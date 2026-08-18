@@ -101,8 +101,8 @@
                     id: `${list.id}#${index}`,
                     lat: list.lat,
                     lon: list.lon,
-                    polyline,
                 });
+                trail.polyline = polyline;
                 trail.author = list.author;
                 applyListBounds(trail, list);
                 return trail;
