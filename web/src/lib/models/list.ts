@@ -15,6 +15,8 @@ export class List {
     avatar?: string;
     trails?: string[];
     iri?: string;
+    lat?: number;
+    lon?: number;
     expand?: {
         trails?: Trail[]
         list_share_via_list?: ListShare[]

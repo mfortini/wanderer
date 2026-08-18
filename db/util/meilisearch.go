@@ -169,6 +169,39 @@ func getStoredBounds(r *core.Record) [4]float64 {
 	return [4]float64{minLat, maxLat, minLon, maxLon}
 }
 
+func listCentroid(trails []*core.Record) (lat, lon float64, ok bool) {
+	n := 0
+	for _, t := range trails {
+		tLat := t.GetFloat("lat")
+		tLon := t.GetFloat("lon")
+		if tLat == 0 && tLon == 0 {
+			continue
+		}
+		lat += tLat
+		lon += tLon
+		n++
+	}
+	if n == 0 {
+		return 0, 0, false
+	}
+	return lat / float64(n), lon / float64(n), true
+}
+
+func floatFromAny(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}
+
 func documentFromListRecord(r *core.Record, author *core.Record, includeShares bool) (map[string]any, error) {
 
 	totalElevationGain := 0.0
@@ -176,10 +209,12 @@ func documentFromListRecord(r *core.Record, author *core.Record, includeShares b
 	totalDistance := 0.0
 	totalDuration := 0.0
 	trails := len(r.GetStringSlice("trails"))
+	var remoteDoc map[string]any
 
 	if r.GetString("iri") != "" && !author.GetBool("is_local") {
 		doc, err := documentFromRemoteRecord(r, "lists")
 		if err == nil {
+			remoteDoc = doc
 			totalElevationGain = doc["elevation_gain"].(float64)
 			totalElevationLoss = doc["elevation_loss"].(float64)
 			totalDistance = doc["distance"].(float64)
@@ -222,6 +257,18 @@ func documentFromListRecord(r *core.Record, author *core.Record, includeShares b
 		"created":        r.GetDateTime("created").Time().Unix(),
 		"trails":         trails,
 		"iri":            r.GetString("iri"),
+	}
+
+	if lat, lon, ok := listCentroid(r.ExpandedAll("trails")); ok {
+		document["lat"] = lat
+		document["lon"] = lon
+	} else if remoteDoc != nil {
+		if lat, ok := floatFromAny(remoteDoc["lat"]); ok {
+			document["lat"] = lat
+		}
+		if lon, ok := floatFromAny(remoteDoc["lon"]); ok {
+			document["lon"] = lon
+		}
 	}
 
 	if includeShares {

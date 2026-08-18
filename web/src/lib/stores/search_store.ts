@@ -30,6 +30,8 @@ export type ListSearchResult = {
     trails: number
     shares?: string[];
     iri?: string;
+    lat?: number;
+    lon?: number;
 }
 
 type NominatimResponse = {
