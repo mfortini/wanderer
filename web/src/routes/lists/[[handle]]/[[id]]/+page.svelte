@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { goto } from "$app/navigation";
+    import { afterNavigate, goto } from "$app/navigation";
     import { browser } from "$app/environment";
     import { page } from "$app/state";
     import ActorSearch from "$lib/components/actor_search.svelte";
@@ -22,7 +22,6 @@
     import {
         lists_delete,
         lists_search_filter,
-        lists_show,
     } from "$lib/stores/list_store";
     import { trails_get_bounding_box, trails_show } from "$lib/stores/trail_store";
     import { currentUser } from "$lib/stores/user_store";
@@ -57,17 +56,14 @@
     let markers: M.Marker[] = $state([]);
 
     let selectedList: List | null = $state(
-        untrack(() =>
-            page.params.handle && page.params.id ? data.lists.items[0] : null,
-        ),
+        untrack(() => data.selectedList ?? null),
     );
     let selectedTrail: Trail | null = $state(null);
+    let applyingTrailHash = false;
 
     let loading: boolean = $state(true);
     let loadingNextPage: boolean = false;
     let filterExpanded: boolean = $state(false);
-
-    let loadAllListsOnNextBack = false;
 
     let userQuery = $state("");
     let overviewFitKey = $state("");
@@ -128,9 +124,43 @@
         return [trail];
     }
 
+    function listHref(item: List) {
+        return `/lists/${handleFromRecordWithIRI(item)}/${item.id}`;
+    }
+
     function listIdFromOverviewTrail(trail: Trail) {
         return trail.id?.split("#")[0] ?? trail.id;
     }
+
+    function currentListHref() {
+        if (!selectedList) {
+            return "/lists";
+        }
+        return listHref(selectedList);
+    }
+
+    $effect(() => {
+        const nextList = data.selectedList ?? null;
+        const id = page.params.id;
+        if (!id) {
+            selectedList = null;
+            return;
+        }
+        if (nextList?.id === id) {
+            selectedList = nextList;
+        }
+    });
+
+    $effect(() => {
+        if (!browser) {
+            return;
+        }
+        const hash = page.url.hash.replace(/^#/, "");
+        const list = selectedList;
+        untrack(() => {
+            void applyTrailHash(hash, list);
+        });
+    });
 
     async function fitOverviewOrFallback() {
         if (overviewTrails.length) {
@@ -190,15 +220,52 @@
         });
     });
 
-    onMount(() => {
-        if (page.params.handle && page.params.id) {
-            // setCurrentList(data.lists[0]);
-            // only the requested list has been loaded at this point
-            // load all lists the next time the user presses the back button
-            loadAllListsOnNextBack = true;
+    afterNavigate(() => {
+        if (page.params.id) {
+            document.getElementById("list-container")?.scrollTo({ top: 0 });
+        }
+    });
+
+    onMount(async () => {
+        if (lists.length === 0) {
+            const response = await lists_search_filter(filter, 1);
+            lists = response.items;
+            pagination.page = response.page;
+            pagination.totalPages = response.totalPages;
         }
         loading = false;
     });
+
+    async function applyTrailHash(hash: string, list: List | null) {
+        if (!hash || !list) {
+            if (!hash) {
+                selectedTrail = null;
+            }
+            return;
+        }
+        if (selectedTrail?.id === hash || applyingTrailHash) {
+            return;
+        }
+        const trail = list.expand?.trails?.find((item) => item.id === hash);
+        if (!trail) {
+            selectedTrail = null;
+            return;
+        }
+        applyingTrailHash = true;
+        try {
+            selectedTrail = await trails_show(
+                trail.iri
+                    ? trail.iri.substring(trail.iri.length - 15)
+                    : trail.id!,
+                handleFromRecordWithIRI(trail),
+                undefined,
+                true,
+            );
+            mapWithElevation?.unHighlightTrail(trail.id!);
+        } finally {
+            applyingTrailHash = false;
+        }
+    }
 
     async function handleDropdownClick(item: DropdownItem) {
         if (!selectedList) {
@@ -218,42 +285,31 @@
             return;
         }
         await lists_delete(selectedList);
-        await updateFilter();
-        selectedList = null;
+        await goto("/lists", { noScroll: true });
+        await updateFilter(false);
     }
 
     async function setCurrentList(item: List) {
-        const fullList = await lists_show(
-            item.id!,
-            handleFromRecordWithIRI(item),
-            fetch,
-        );
-        selectedList = fullList;
+        await goto(listHref(item), { noScroll: true, keepFocus: true });
         document.getElementById("list-container")?.scrollTo({ top: 0 });
     }
 
     async function back() {
-        if (selectedTrail) {
-            selectedTrail = null;
-        } else if (selectedList) {
-            selectedList = null;
+        if (selectedTrail && selectedList) {
+            await goto(currentListHref(), { noScroll: true, keepFocus: true });
+            return;
         }
-        if (loadAllListsOnNextBack) {
-            await updateFilter(false);
-            loadAllListsOnNextBack = false;
-        }
+        await goto("/lists", { noScroll: true, keepFocus: true });
     }
 
     async function selectTrail(trail: Trail) {
-        const fullTrail = await trails_show(
-            trail.iri ? trail.iri.substring(trail.iri.length - 15) : trail.id!,
-            handleFromRecordWithIRI(trail),
-            undefined,
-            true,
-        );
-        selectedTrail = fullTrail;
-
-        mapWithElevation?.unHighlightTrail(trail.id!);
+        if (!selectedList) {
+            return;
+        }
+        await goto(`${currentListHref()}#${trail.id}`, {
+            noScroll: true,
+            keepFocus: true,
+        });
         window.scrollTo({ top: 0 });
     }
 
@@ -294,8 +350,7 @@
         loading = true;
 
         if ((selectedList || selectedTrail) && resetMap) {
-            selectedList = null;
-            selectedTrail = null;
+            await goto("/lists", { noScroll: true, keepFocus: true });
         }
 
         pagination.page = 1;
@@ -451,13 +506,13 @@
                         <EmptyStateSearch width={356}></EmptyStateSearch>
                     {:else}
                         {#each lists as item, i}
-                            <div
-                                class="list-list-item"
-                                onclick={() => setCurrentList(item)}
-                                role="presentation"
+                            <a
+                                class="list-list-item block"
+                                href={listHref(item)}
+                                data-sveltekit-noscroll
                             >
                                 <ListCard list={item}></ListCard>
-                            </div>
+                            </a>
                         {/each}
                     {/if}
                 </div>
@@ -497,8 +552,8 @@
                 }
             }}
             onselect={(trail) => {
-                if (selectedList) {
-                    selectedTrail = trail;
+                if (selectedList && trail.id !== selectedTrail?.id) {
+                    selectTrail(trail);
                 }
             }}
             oninit={() => {
