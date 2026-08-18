@@ -357,6 +357,87 @@ export function buildSpeedColoredRoute(
     };
 }
 
+function offsetPosition(position: Position, bearing: number, meters: number): Position {
+    const radius = 6_371_000;
+    const angularDistance = meters / radius;
+    const bearingRad = (bearing * Math.PI) / 180;
+    const lat1 = (position[1] * Math.PI) / 180;
+    const lon1 = (position[0] * Math.PI) / 180;
+    const lat2 = Math.asin(
+        Math.sin(lat1) * Math.cos(angularDistance) +
+            Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearingRad),
+    );
+    const lon2 =
+        lon1 +
+        Math.atan2(
+            Math.sin(bearingRad) * Math.sin(angularDistance) * Math.cos(lat1),
+            Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2),
+        );
+    return [((lon2 * 180) / Math.PI + 540) % 360 - 180, (lat2 * 180) / Math.PI];
+}
+
+function positionsToRibbonRing(
+    coordinates: Position[],
+    halfWidthMeters: number,
+): Position[] {
+    const left: Position[] = [];
+    const right: Position[] = [];
+    for (let i = 0; i < coordinates.length; i += 1) {
+        const previous = coordinates[Math.max(0, i - 1)];
+        const next = coordinates[Math.min(coordinates.length - 1, i + 1)];
+        const bearing = bearingBetween(previous, next);
+        left.push(offsetPosition(coordinates[i], bearing - 90, halfWidthMeters));
+        right.push(offsetPosition(coordinates[i], bearing + 90, halfWidthMeters));
+    }
+    return [...left, ...right.reverse(), left[0]];
+}
+
+export function buildRouteRibbonCollection(
+    route: FeatureCollection,
+    halfWidthMeters = 11,
+): FeatureCollection {
+    const features: Feature[] = [];
+    const maxChunkMeters = 45;
+
+    for (const feature of route.features) {
+        if (feature.geometry?.type !== "LineString") {
+            continue;
+        }
+        const coordinates = feature.geometry.coordinates;
+        if (coordinates.length < 2) {
+            continue;
+        }
+
+        let chunk: Position[] = [coordinates[0]];
+        let chunkDistance = 0;
+        for (let i = 1; i < coordinates.length; i += 1) {
+            const from = coordinates[i - 1];
+            const to = coordinates[i];
+            const dist = haversineDistance(from[1], from[0], to[1], to[0]);
+            chunk.push(to);
+            chunkDistance += dist;
+            const isLast = i === coordinates.length - 1;
+            if (!isLast && chunkDistance < maxChunkMeters) {
+                continue;
+            }
+            if (chunk.length >= 2) {
+                features.push({
+                    type: "Feature",
+                    properties: { ...feature.properties },
+                    geometry: {
+                        type: "Polygon",
+                        coordinates: [positionsToRibbonRing(chunk, halfWidthMeters)],
+                    },
+                });
+            }
+            chunk = [to];
+            chunkDistance = 0;
+        }
+    }
+
+    return { type: "FeatureCollection", features };
+}
+
 export function splitLineAtDistance(
     geometry: RouteGeometryState,
     targetDistance: number,
