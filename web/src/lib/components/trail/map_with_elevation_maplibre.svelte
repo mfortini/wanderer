@@ -687,9 +687,9 @@
         layerManager.addLayer(
             "preview",
             new PreviewLayer(map, geojson, {
-                showStartMarker: onUnclusteredClick
-                    ? false
-                    : (page.data.settings?.behavior?.showTrailStartMarker ?? false),
+                showStartMarker: Boolean(onUnclusteredClick) ||
+                    (page.data.settings?.behavior?.showTrailStartMarker ?? false),
+                showEndMarker: Boolean(onUnclusteredClick),
                 listeners: {
                     preview: {
                         onEnter: (e) => {

@@ -103,14 +103,21 @@ export class LayerManager {
             return;
         }
         if (this.layers[id] && this.map.getLayer(id)) {
-            // update sources and return
             for (const [sourceId, s] of Object.entries(layer.spec.sources)) {
-                if (s.type != "geojson" || !this.map.getSource(sourceId)) {
+                if (s.type != "geojson") {
                     continue;
                 }
-
+                if (!this.map.getSource(sourceId)) {
+                    this.map.addSource(sourceId, s);
+                    continue;
+                }
                 const source = this.map.getSource(sourceId) as M.GeoJSONSource
                 source.setData(s.data)
+            }
+            for (const l of layer.spec.layers) {
+                if (!this.map.getLayer(l.id)) {
+                    this.map.addLayer(l)
+                }
             }
             this.layers[id] = layer
             return;
