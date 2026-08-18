@@ -776,6 +776,24 @@ export class ElevationProfile {
         return null;
     }
 
+    getChartCoordinatesFromProgress(progress: number) {
+        const meta = this.chart.getDatasetMeta(0);
+        if (!meta?.data?.length) {
+            return null;
+        }
+        const clampedProgress = Math.max(0, Math.min(progress, 1));
+        const lastIndex = meta.data.length - 1;
+        const index = Math.min(
+            lastIndex,
+            Math.max(0, Math.round(lastIndex * clampedProgress)),
+        );
+        const element = meta.data[index];
+        if (element) {
+            return [element.x, element.y];
+        }
+        return null;
+    }
+
     gradientFromElevation(chart: Chart, force: boolean = false) {
         const ctx = chart.ctx;
         const chartArea = chart.chartArea;
@@ -1134,6 +1152,10 @@ export class ElevationProfile {
             this.chart.options.scales.y.max = maxElevation + elevationPadding;
         }
         this.chart.update();
+    }
+
+    getDurationSeconds() {
+        return this.cumulatedTime.at(-1) ?? 0;
     }
 
 }

@@ -9,6 +9,8 @@ export class TrailLayer implements BaseLayer {
     markers: Record<string, Marker> = {};
 
     constructor(id: string, geojson: GeoJSON.FeatureCollection, color: string, options?: {
+        width?: number;
+        opacity?: number;
         listeners?: { onMouseUp?: (e: MapMouseEvent) => void; onMouseDown?: (e: MapMouseEvent) => void; onEnter?: (e: MapMouseEvent) => void; onLeave?: (e: MapMouseEvent) => void; onMouseMove?: (e: MapMouseEvent) => void; }
     }) {
         const layer: M.LineLayerSpecification = {
@@ -17,7 +19,8 @@ export class TrailLayer implements BaseLayer {
             source: id,
             paint: {
                 "line-color": color,
-                "line-width": 5,
+                "line-width": options?.width ?? 5,
+                "line-opacity": options?.opacity ?? 1,
             },
         };
         

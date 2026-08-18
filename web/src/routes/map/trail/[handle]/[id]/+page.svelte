@@ -50,6 +50,7 @@
             activeTrail={0}
             bind:markers
             showTerrain={true}
+            enableRoutePlayback={true}
         ></MapWithElevationMaplibre>
     </div>
 </main>

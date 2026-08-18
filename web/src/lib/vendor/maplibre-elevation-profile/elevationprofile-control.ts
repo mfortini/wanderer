@@ -213,6 +213,23 @@ export class ElevationProfileControl implements IControl {
         chart.canvas.dispatchEvent(mouseMoveEvent);
     }
 
+    seekToProgress(progress: number) {
+        if (!this.elevationProfileChart) {
+            return;
+        }
+        const chart = this.elevationProfileChart.chart;
+        const point = this.elevationProfileChart.getChartCoordinatesFromProgress(progress);
+        if (point == null) {
+            return;
+        }
+        const rectangle = chart.canvas.getBoundingClientRect();
+        const mouseMoveEvent = new MouseEvent("mousemove", {
+            clientX: rectangle.left + point[0],
+            clientY: rectangle.top + point[1],
+        });
+        chart.canvas.dispatchEvent(mouseMoveEvent);
+    }
+
     hideCrosshair() {
         const mouseOutEvent = new MouseEvent('mouseout');
         return this.elevationProfileChart?.chart.canvas.dispatchEvent(mouseOutEvent);
@@ -243,5 +260,9 @@ export class ElevationProfileControl implements IControl {
         if (!this.data) return;
 
         this.elevationProfileChart.setData(this.data, waypoints);
+    }
+
+    getDurationSeconds() {
+        return this.elevationProfileChart?.getDurationSeconds() ?? 0;
     }
 }
