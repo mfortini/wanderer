@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Waypoint } from "$lib/models/waypoint";
 import {
     getWaypointPopupMedia,
+    highlightElevationWaypoint,
     scrollToWaypointAnchor,
     waypointAnchorId,
 } from "./waypoint_map_util";
@@ -109,5 +110,27 @@ describe("scrollToWaypointAnchor", () => {
 
         expect(scrollToWaypointAnchor()).toBeNull();
         expect(getElementById).not.toHaveBeenCalled();
+    });
+});
+
+describe("highlightElevationWaypoint", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it("marks the matching elevation marker as active", () => {
+        const previous = { classList: { remove: vi.fn(), add: vi.fn() } };
+        const next = { classList: { remove: vi.fn(), add: vi.fn() } };
+        vi.stubGlobal("document", {
+            querySelectorAll: () => [previous],
+            querySelector: (selector: string) =>
+                selector.includes("abc123abc123abc") ? next : null,
+        });
+
+        highlightElevationWaypoint("abc123abc123abc");
+
+        expect(previous.classList.remove).toHaveBeenCalledWith("wp-marker-active");
+        expect(next.classList.add).toHaveBeenCalledWith("wp-marker-active");
     });
 });

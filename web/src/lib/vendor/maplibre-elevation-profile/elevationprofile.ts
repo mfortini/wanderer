@@ -17,8 +17,9 @@ import { haversineDistance } from "$lib/models/gpx/utils";
 import type { Waypoint } from "$lib/models/waypoint";
 import { formatDistance, formatTimeHHMM } from "$lib/util/format_util";
 import {
+    applyElevationWaypointHighlight,
+    focusWaypoint,
     getWaypointPopupMedia,
-    scrollToWaypointAnchor,
 } from "$lib/util/waypoint_map_util";
 import { haversineCumulatedDistanceWgs84, smoothElevations } from "./tools";
 
@@ -916,6 +917,9 @@ export class ElevationProfile {
             const marker = document.createElement("div");
             marker.className =
                 "wp-marker absolute -translate-x-1/2 w-6 aspect-square bg-background-inverse rounded-full flex justify-center items-center text-content-inverse cursor-pointer z-20";
+            if (waypoint?.id) {
+                marker.dataset.waypointId = waypoint.id;
+            }
             marker.style.left = `${xScale.getPixelForValue(position)}px`;
             marker.style.top = "8px";
 
@@ -955,11 +959,13 @@ export class ElevationProfile {
             marker.addEventListener("click", (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                scrollToWaypointAnchor(waypoint?.id);
+                focusWaypoint(waypoint, "profile");
             });
 
             waypointContainer.appendChild(marker);
         });
+
+        applyElevationWaypointHighlight();
     }
 
     async setData(data: GeoJsonObject, waypoints?: Waypoint[]) {
