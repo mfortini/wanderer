@@ -28,7 +28,7 @@
     import { TerrainLayer } from "$lib/vendor/maplibre-layer-manager/terrain-layer";
     import { TrailLayer } from "$lib/vendor/maplibre-layer-manager/trail-layer";
     import { StyleSwitcherControl } from "$lib/vendor/maplibre-style-switcher/style-switcher-control";
-    import type { Feature, FeatureCollection, GeoJSON } from "geojson";
+    import type { BBox, Feature, FeatureCollection, GeoJSON } from "geojson";
     import * as M from "maplibre-gl";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { onDestroy, onMount, untrack } from "svelte";
@@ -232,7 +232,13 @@
                 } else if (t.expand?.gpx_data) {
                     fc = GPX.parse(t.expand.gpx_data).toGeoJSON();
                 } else if (t.polyline) {
-                    fc = polylineToGeoJSON(t.polyline, 5) as FeatureCollection;
+                    fc = polylineToGeoJSON(
+                        t.polyline,
+                        5,
+                        t.lat !== undefined && t.lon !== undefined
+                            ? { lat: t.lat, lon: t.lon }
+                            : undefined,
+                    ) as FeatureCollection;
                 }
 
                 if (fc) {
@@ -390,19 +396,103 @@
         }
     }
 
-    function getBounds() {
+    function lngLatBoundsFromCorners(
+        west: number,
+        south: number,
+        east: number,
+        north: number,
+    ) {
+        if (west === east || south === north) {
+            const padX = west === east ? 0.2 : 0;
+            const padY = south === north ? 0.2 : 0;
+            return new M.LngLatBounds(
+                [west - padX, south - padY],
+                [east + padX, north + padY],
+            );
+        }
+        return new M.LngLatBounds([west, south], [east, north]);
+    }
+
+    function extendBounds(
+        minX: number,
+        minY: number,
+        maxX: number,
+        maxY: number,
+        west: number,
+        south: number,
+        east: number,
+        north: number,
+    ) {
+        return [
+            Math.min(minX, west),
+            Math.min(minY, south),
+            Math.max(maxX, east),
+            Math.max(maxY, north),
+        ] as const;
+    }
+
+    function getTrailRecordBounds() {
         let minX = Infinity,
             minY = Infinity,
             maxX = -Infinity,
             maxY = -Infinity;
 
-        for (const [xMin, yMin, xMax, yMax] of Object.values(gpxDataMap)
-            .filter((d) => d.bbox !== undefined)
-            .map((d) => d.bbox!)) {
-            minX = Math.min(minX, xMin);
-            minY = Math.min(minY, yMin);
-            maxX = Math.max(maxX, xMax);
-            maxY = Math.max(maxY, yMax);
+        for (const t of trails) {
+            const west = t.min_lon ?? t.lon;
+            const east = t.max_lon ?? t.lon;
+            const south = t.min_lat ?? t.lat;
+            const north = t.max_lat ?? t.lat;
+            if (
+                west === undefined ||
+                east === undefined ||
+                south === undefined ||
+                north === undefined ||
+                (west === 0 && east === 0 && south === 0 && north === 0)
+            ) {
+                continue;
+            }
+            [minX, minY, maxX, maxY] = extendBounds(
+                minX,
+                minY,
+                maxX,
+                maxY,
+                west,
+                south,
+                east,
+                north,
+            );
+        }
+
+        if (minX >= Infinity) {
+            return undefined;
+        }
+        return lngLatBoundsFromCorners(minX, minY, maxX, maxY);
+    }
+
+    function getBounds() {
+        const fromTrails = getTrailRecordBounds();
+        if (fromTrails) {
+            return fromTrails;
+        }
+
+        let minX = Infinity,
+            minY = Infinity,
+            maxX = -Infinity,
+            maxY = -Infinity;
+
+        for (const box of Object.values(gpxDataMap)
+            .map((d) => d.bbox)
+            .filter((b): b is BBox => b !== undefined)) {
+            [minX, minY, maxX, maxY] = extendBounds(
+                minX,
+                minY,
+                maxX,
+                maxY,
+                box[0],
+                box[1],
+                box[2],
+                box[3],
+            );
         }
 
         if (clusterTrails) {
@@ -410,44 +500,53 @@
                 if (t.lat === undefined || t.lon === undefined) {
                     continue;
                 }
-                minX = Math.min(minX, t.lon);
-                minY = Math.min(minY, t.lat);
-                maxX = Math.max(maxX, t.lon);
-                maxY = Math.max(maxY, t.lat);
+                [minX, minY, maxX, maxY] = extendBounds(
+                    minX,
+                    minY,
+                    maxX,
+                    maxY,
+                    t.lon,
+                    t.lat,
+                    t.lon,
+                    t.lat,
+                );
             }
         }
 
         if (
             minX >= Infinity ||
-            minY >= Infinity ||
-            maxX <= -Infinity ||
-            maxY <= -Infinity ||
             (minX === 0 && minY === 0 && maxX === 0 && maxY === 0)
         ) {
             return undefined;
         }
 
-        if (minX === maxX || minY === maxY) {
-            const padX = minX === maxX ? 0.2 : 0;
-            const padY = minY === maxY ? 0.2 : 0;
-            return new M.LngLatBounds([
-                minX - padX,
-                minY - padY,
-                maxX + padX,
-                maxY + padY,
-            ]);
-        }
-
-        return new M.LngLatBounds([minX, minY, maxX, maxY]);
+        return lngLatBoundsFromCorners(minX, minY, maxX, maxY);
     }
 
     export function fitToBounds(bounds?: M.LngLatBoundsLike) {
-        const activeId = activeTrail !== null ? trails[activeTrail]?.id : null;
-        const boundsToFit =
-            bounds ??
-            (activeId && gpxDataMap[activeId]
-                ? (gpxDataMap[activeId].bbox as M.LngLatBoundsLike)
-                : getBounds());
+        const activeTrailRecord =
+            activeTrail !== null ? trails[activeTrail] : undefined;
+        let boundsToFit = bounds;
+
+        if (!boundsToFit && activeTrailRecord) {
+            const west = activeTrailRecord.min_lon ?? activeTrailRecord.lon;
+            const east = activeTrailRecord.max_lon ?? activeTrailRecord.lon;
+            const south = activeTrailRecord.min_lat ?? activeTrailRecord.lat;
+            const north = activeTrailRecord.max_lat ?? activeTrailRecord.lat;
+            if (
+                west !== undefined &&
+                east !== undefined &&
+                south !== undefined &&
+                north !== undefined
+            ) {
+                boundsToFit = lngLatBoundsFromCorners(west, south, east, north);
+            } else if (activeTrailRecord.id && gpxDataMap[activeTrailRecord.id]?.bbox) {
+                const box = gpxDataMap[activeTrailRecord.id].bbox!;
+                boundsToFit = lngLatBoundsFromCorners(box[0], box[1], box[2], box[3]);
+            }
+        }
+
+        boundsToFit ??= getBounds();
 
         if (!boundsToFit || !map) {
             return;
