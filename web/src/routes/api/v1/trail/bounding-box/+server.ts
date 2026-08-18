@@ -32,17 +32,15 @@ import { error, json, type RequestEvent } from "@sveltejs/kit";
  *         description: Internal Server Error
  */
 export async function GET(event: RequestEvent) {
-    if (!event.locals.pb.authStore.record) {
-        return json({
-            max_lat: 0,
-            min_lat: 0,
-            max_lon: 0,
-            min_lon: 0,
-            has_trails: false,
-        });
-    }
     try {
-        const filter = await withTrailPreferenceMeiliFilter(event, undefined);
+        const user = event.locals.user;
+        const visibilityFilter = user?.actor
+            ? `(public = TRUE OR author = ${user.actor} OR shares = ${user.actor})`
+            : "public = TRUE";
+        const filter = await withTrailPreferenceMeiliFilter(
+            event,
+            visibilityFilter,
+        );
         const attributesToRetrieve = ["min_lat", "max_lat", "min_lon", "max_lon"];
         const r = await event.locals.ms.multiSearch({
             queries: [

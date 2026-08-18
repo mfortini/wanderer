@@ -12,7 +12,6 @@
     import MapWithElevationMaplibre from "$lib/components/trail/map_with_elevation_maplibre.svelte";
     import TrailCard from "$lib/components/trail/trail_card.svelte";
     import TrailFilterPanel from "$lib/components/trail/trail_filter_panel.svelte";
-    import type { Settings } from "$lib/models/settings";
     import {
         defaultTrailSearchAttributes,
         type Trail,
@@ -26,7 +25,7 @@
         type ListSearchResult,
         type LocationSearchResult,
     } from "$lib/stores/search_store";
-    import { trails_search_bounding_box } from "$lib/stores/trail_store";
+    import { trails_get_bounding_box, trails_search_bounding_box } from "$lib/stores/trail_store";
     import { getIconForLocation } from "$lib/util/icon_util";
     import type { Snapshot } from "@sveltejs/kit";
     import type { FeatureCollection } from "geojson";
@@ -47,7 +46,6 @@
 
     let filter: TrailFilter = $state(page.data.filter);
     const maxBoundingBox: TrailBoundingBox = page.data.boundingBox;
-    const settings: Settings = page.data.settings;
 
     let loading: boolean = $state(true);
     let loadingNextPage: boolean = false;
@@ -57,6 +55,35 @@
         totalPages: 1,
     };
     let searchRequestId = 0;
+
+    function isValidBoundingBox(bbox: TrailBoundingBox) {
+        return Boolean(
+            bbox.has_trails ??
+                (bbox.min_lon != 0 ||
+                    bbox.max_lat != 0 ||
+                    bbox.max_lon != 0 ||
+                    bbox.min_lat != 0),
+        );
+    }
+
+    function fitMapToBoundingBox(bbox: TrailBoundingBox) {
+        if (!isValidBoundingBox(bbox)) {
+            return false;
+        }
+        if (bbox.min_lon == bbox.max_lon && bbox.min_lat == bbox.max_lat) {
+            map?.setZoom(12);
+            map?.setCenter([bbox.min_lon, bbox.min_lat]);
+        } else {
+            map?.fitBounds(
+                [
+                    [bbox.min_lon, bbox.min_lat],
+                    [bbox.max_lon, bbox.max_lat],
+                ],
+                { animate: false, padding: 64, maxZoom: 12 },
+            );
+        }
+        return true;
+    }
 
     const sortOptions: SelectItem[] = [
         { text: $_("name"), value: "name" },
@@ -261,25 +288,8 @@
         }, 200);
     }
 
-    function handleMapInit() {
+    async function handleMapInit() {
         if (
-            page.url.searchParams.has("tl_lat") &&
-            page.url.searchParams.has("tl_lon") &&
-            page.url.searchParams.has("br_lat") &&
-            page.url.searchParams.has("br_lon")
-        ) {
-            const boundingBox: M.LngLatBoundsLike = [
-                [
-                    parseFloat(page.url.searchParams.get("br_lon")!),
-                    parseFloat(page.url.searchParams.get("tl_lat")!),
-                ],
-                [
-                    parseFloat(page.url.searchParams.get("tl_lon")!),
-                    parseFloat(page.url.searchParams.get("br_lat")!),
-                ],
-            ];
-            map?.fitBounds(boundingBox, { animate: false });
-        } else if (
             page.url.searchParams.has("lat") &&
             page.url.searchParams.has("lon")
         ) {
@@ -287,51 +297,19 @@
             const lon = page.url.searchParams.get("lon");
             map?.setZoom(14);
             map?.setCenter([parseFloat(lon!), parseFloat(lat!)]);
-        } else if (
-            settings &&
-            settings.mapFocus == "trails" &&
-            (maxBoundingBox.has_trails ??
-                (maxBoundingBox.min_lon != 0 ||
-                    maxBoundingBox.max_lat != 0 ||
-                    maxBoundingBox.max_lon != 0 ||
-                    maxBoundingBox.min_lat != 0))
-        ) {
-            if (
-                maxBoundingBox.min_lon == maxBoundingBox.max_lon &&
-                maxBoundingBox.min_lat == maxBoundingBox.max_lat
-            ) {
-                map?.setZoom(12);
-                map?.setCenter([
-                    maxBoundingBox.min_lon,
-                    maxBoundingBox.min_lat,
-                ]);
-            } else {
-                const boundingBox: M.LngLatBoundsLike = [
-                    [maxBoundingBox.min_lon, maxBoundingBox.max_lat],
-                    [maxBoundingBox.max_lon, maxBoundingBox.min_lat],
-                ];
-                map?.fitBounds(boundingBox, { animate: false, padding: 32 });
-            }
-        } else if (
-            settings &&
-            settings.mapFocus == "location" &&
-            settings.location
-        ) {
-            map?.setZoom(12);
-            map?.setCenter([settings.location.lon, settings.location.lat]);
-        } else {
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const lat = position.coords.latitude;
-                    const lon = position.coords.longitude;
-                    map?.setZoom(12);
-                    map?.setCenter([lon, lat]);
-                },
-                (error) => {
-                    console.error("Error getting user location:", error);
-                },
-            );
+            return;
         }
+
+        let bbox = maxBoundingBox;
+        if (!isValidBoundingBox(bbox)) {
+            try {
+                bbox = await trails_get_bounding_box();
+            } catch {
+                // Keep the default map view if the bounding box is unavailable.
+            }
+        }
+
+        fitMapToBoundingBox(bbox);
     }
 
     async function onListScroll(e: Event) {

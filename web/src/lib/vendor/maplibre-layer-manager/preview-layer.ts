@@ -144,8 +144,8 @@ export class PreviewLayer implements BaseLayer {
                     filter: ["literal", options?.showStartMarker ?? false],
                     paint: {
                         "circle-color": "#242734",
-                        "circle-radius": 6,
-                        "circle-stroke-width": 2,
+                        "circle-radius": 4,
+                        "circle-stroke-width": 1.5,
                         "circle-stroke-color": "#fff",
                     },
                 },
@@ -156,8 +156,8 @@ export class PreviewLayer implements BaseLayer {
                     filter: ["literal", options?.showEndMarker ?? false],
                     paint: {
                         "circle-color": "#fff",
-                        "circle-radius": 6,
-                        "circle-stroke-width": 3,
+                        "circle-radius": 4,
+                        "circle-stroke-width": 2,
                         "circle-stroke-color": "#242734",
                     },
                 },

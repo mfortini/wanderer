@@ -77,6 +77,7 @@
         ) => void;
         oninit?: (map: M.Map) => void;
         autoGeolocateOnDrawing?: boolean;
+        trackUserLocation?: boolean;
         buildPoiAnchorAction?: OverpassPopupActionFactory;
     }
 
@@ -112,6 +113,7 @@
         onUnclusteredClick,
         oninit,
         autoGeolocateOnDrawing = false,
+        trackUserLocation = false,
         buildPoiAnchorAction = undefined,
     }: Props = $props();
 
@@ -332,6 +334,11 @@
         });
 
         if (clusterTrails) {
+            Object.entries(layerManager.layers).forEach(([id, layer]) => {
+                if (layer instanceof TrailLayer) {
+                    removeStartEndMarkers(id);
+                }
+            });
             addPreviewLayer(previewData);
             addClusterLayer(clusterData);
         } else {
@@ -607,6 +614,7 @@
     }
 
     function removeTrailLayer(id: string) {
+        removeStartEndMarkers(id);
         layerManager.removeLayer(id);
     }
 
@@ -1175,7 +1183,7 @@
             fitBoundsOptions: {
                 animate: fitBounds == "animate",
             },
-            trackUserLocation: true,
+            trackUserLocation,
         });
         map.addControl(geolocateControl);
 
