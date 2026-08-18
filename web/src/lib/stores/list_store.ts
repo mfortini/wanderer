@@ -266,6 +266,8 @@ export async function searchResultToLists(hits: Hits<ListSearchResult>): Promise
             distance: h.distance,
             duration: h.duration,
             iri: h.iri,
+            lat: h.lat,
+            lon: h.lon,
             expand: {
                 author: {
                     icon: h.author_avatar,

@@ -83,15 +83,6 @@ export function encodePolyline(coordinates: number[][], precision: number = 6) {
     return output;
 };
 
-function flipped(coords: number[][]) {
-    var flipped = [];
-    for (var i = 0; i < coords.length; i++) {
-        var coord = coords[i].slice();
-        flipped.push([coord[1], coord[0]]);
-    }
-    return flipped;
-}
-
 export function polylineToGeoJSON(str: string, precision: number = 6) {
     var coords = decodePolyline(str, precision);
     const geojson = {
@@ -102,7 +93,8 @@ export function polylineToGeoJSON(str: string, precision: number = 6) {
                 type: "Feature",
                 geometry: {
                     type: "LineString",
-                    coordinates: flipped(coords),
+                    // decodePolyline already returns GeoJSON [lng, lat]
+                    coordinates: coords,
                 },
             }
         ]

@@ -252,8 +252,11 @@
                         id: t.id,
                         type: "Feature",
                         properties: {
+                            id: t.id,
                             trail: t.id,
                             bounding_box_diagonal: t.bounding_box_diagonal,
+                            point_count: 1,
+                            point_count_abbreviated: "1",
                         },
                         geometry: {
                             type: "Point",
@@ -315,12 +318,20 @@
         if (clusterTrails) {
             addPreviewLayer(previewData);
             addClusterLayer(clusterData);
+        } else {
+            layerManager.removeLayer("clusters");
+            layerManager.removeLayer("preview");
         }
 
         if (!drawing && fitBounds !== "off") {
             const currentBboxes = Object.values(gpxDataMap)
                 .map((d) => d.bbox)
                 .filter((b) => b !== undefined);
+            const hasClusterPoints =
+                clusterTrails &&
+                trails.some(
+                    (t) => t.lat !== undefined && t.lon !== undefined,
+                );
 
             if (
                 activeTrail !== null &&
@@ -329,7 +340,7 @@
                 gpxDataMap[trails[activeTrail].id!]
             ) {
                 focusTrail(trails[activeTrail]);
-            } else if (currentBboxes.length > 0) {
+            } else if (currentBboxes.length > 0 || hasClusterPoints) {
                 flyToBounds();
             }
         } else if (drawing && activeTrail !== null && mapLoaded) {
@@ -394,16 +405,40 @@
             maxY = Math.max(maxY, yMax);
         }
 
-        if (
-            minX < Infinity &&
-            minY < Infinity &&
-            maxX > -Infinity &&
-            maxY > -Infinity
-        ) {
-            return new M.LngLatBounds([minX, minY, maxX, maxY]);
-        } else {
-            return new M.LngLatBounds([0, 0, 0, 0]);
+        if (clusterTrails) {
+            for (const t of trails) {
+                if (t.lat === undefined || t.lon === undefined) {
+                    continue;
+                }
+                minX = Math.min(minX, t.lon);
+                minY = Math.min(minY, t.lat);
+                maxX = Math.max(maxX, t.lon);
+                maxY = Math.max(maxY, t.lat);
+            }
         }
+
+        if (
+            minX >= Infinity ||
+            minY >= Infinity ||
+            maxX <= -Infinity ||
+            maxY <= -Infinity ||
+            (minX === 0 && minY === 0 && maxX === 0 && maxY === 0)
+        ) {
+            return undefined;
+        }
+
+        if (minX === maxX || minY === maxY) {
+            const padX = minX === maxX ? 0.2 : 0;
+            const padY = minY === maxY ? 0.2 : 0;
+            return new M.LngLatBounds([
+                minX - padX,
+                minY - padY,
+                maxX + padX,
+                maxY + padY,
+            ]);
+        }
+
+        return new M.LngLatBounds([minX, minY, maxX, maxY]);
     }
 
     export function fitToBounds(bounds?: M.LngLatBoundsLike) {
@@ -430,6 +465,7 @@
                         ? map!.getContainer().clientHeight * 0.3
                         : 0),
             },
+            maxZoom: clusterTrails ? 12 : 18,
         });
     }
 
@@ -490,11 +526,26 @@
                 "unclustered-point": {
                     onEnter: (e) => {
                         if (map) map.getCanvas().style.cursor = "pointer";
-                        const id = (e as any).features[0].properties.id;
+                        const properties = (e as any).features?.[0]?.properties;
+                        const id = properties?.id ?? properties?.trail;
                         const trail = trails.find((t) => t.id === id);
-                        if (!hasTrailDetails(trail)) return;
+                        if (!hasTrailDetails(trail) || onUnclusteredClick) return;
                         highlightCluster(trail, e.lngLat);
                     },
+                    ...(onUnclusteredClick
+                        ? {
+                              onMouseUp: (e: M.MapMouseEvent) => {
+                                  const properties = (e as any).features?.[0]
+                                      ?.properties;
+                                  const id =
+                                      properties?.id ?? properties?.trail;
+                                  const trail = trails.find((t) => t.id === id);
+                                  if (trail) {
+                                      onUnclusteredClick(e, trail);
+                                  }
+                              },
+                          }
+                        : {}),
                 },
             }),
         );

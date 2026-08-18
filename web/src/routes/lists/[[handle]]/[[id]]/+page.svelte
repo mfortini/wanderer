@@ -17,13 +17,13 @@
     import MapWithElevationMaplibre from "$lib/components/trail/map_with_elevation_maplibre.svelte";
     import TrailInfoPanel from "$lib/components/trail/trail_info_panel.svelte";
     import { List, type ListFilter } from "$lib/models/list";
-    import type { Trail } from "$lib/models/trail";
+    import { Trail } from "$lib/models/trail";
     import {
         lists_delete,
         lists_search_filter,
         lists_show,
     } from "$lib/stores/list_store";
-    import { trails_show } from "$lib/stores/trail_store";
+    import { trails_get_bounding_box, trails_show } from "$lib/stores/trail_store";
     import { currentUser } from "$lib/stores/user_store";
     import { handleFromRecordWithIRI } from "$lib/util/activitypub_util.js";
     import * as M from "maplibre-gl";
@@ -69,12 +69,97 @@
     let loadAllListsOnNextBack = false;
 
     let userQuery = $state("");
+    let overviewFitKey = $state("");
 
     let selectedTrailIndex = $derived(selectedTrail ? 0 : null);
 
     let selectedTrailWaypoints = $derived(
         (selectedTrail as Trail | null)?.expand?.waypoints_via_trail,
     );
+
+    let overviewTrails = $derived(
+        lists
+            .map(listToOverviewTrail)
+            .filter((trail): trail is Trail => trail !== null),
+    );
+
+    let mapTrails = $derived(
+        selectedTrail
+            ? [selectedTrail]
+            : (selectedList?.expand?.trails ?? overviewTrails),
+    );
+
+    function listToOverviewTrail(list: List): Trail | null {
+        if (
+            list.lat == null ||
+            list.lon == null ||
+            (list.lat === 0 && list.lon === 0)
+        ) {
+            return null;
+        }
+        const trail = new Trail(list.name, {
+            id: list.id,
+            lat: list.lat,
+            lon: list.lon,
+        });
+        trail.author = list.author;
+        return trail;
+    }
+
+    async function fitOverviewOrFallback() {
+        if (overviewTrails.length) {
+            mapWithElevation?.fitToBounds();
+            return;
+        }
+        try {
+            const bbox = await trails_get_bounding_box();
+            if (
+                bbox.has_trails ??
+                (bbox.min_lon != 0 ||
+                    bbox.max_lat != 0 ||
+                    bbox.max_lon != 0 ||
+                    bbox.min_lat != 0)
+            ) {
+                map?.fitBounds(
+                    [
+                        [bbox.min_lon, bbox.min_lat],
+                        [bbox.max_lon, bbox.max_lat],
+                    ],
+                    { animate: true, padding: 32, maxZoom: 12 },
+                );
+            }
+        } catch {
+            // Keep the default map view if the bounding box is unavailable.
+        }
+    }
+
+    $effect(() => {
+        if (selectedList || selectedTrail) {
+            overviewFitKey = "";
+            return;
+        }
+        if (!map) {
+            return;
+        }
+        const key = [
+            filter.q,
+            filter.author ?? "",
+            String(filter.public),
+            String(filter.shared),
+            filter.sort ?? "",
+            filter.sortOrder ?? "",
+        ].join("|");
+        if (overviewTrails.length === 0 && loading) {
+            return;
+        }
+        if (overviewFitKey === key) {
+            return;
+        }
+        overviewFitKey = key;
+        untrack(() => {
+            fitOverviewOrFallback();
+        });
+    });
 
     onMount(() => {
         if (page.params.handle && page.params.id) {
@@ -123,11 +208,6 @@
             selectedTrail = null;
         } else if (selectedList) {
             selectedList = null;
-            map?.flyTo({
-                animate: true,
-                zoom: 1,
-                center: [0, 0],
-            });
         }
         if (loadAllListsOnNextBack) {
             await updateFilter(false);
@@ -187,11 +267,6 @@
         if ((selectedList || selectedTrail) && resetMap) {
             selectedList = null;
             selectedTrail = null;
-            map?.flyTo({
-                animate: true,
-                zoom: 1,
-                center: [0, 0],
-            });
         }
 
         pagination.page = 1;
@@ -377,17 +452,29 @@
     </div>
     <div id="trail-map">
         <MapWithElevationMaplibre
-            trails={selectedTrail
-                ? [selectedTrail]
-                : (selectedList?.expand?.trails ?? [])}
+            trails={mapTrails}
             waypoints={selectedTrailWaypoints}
             bind:map
             bind:this={mapWithElevation}
             bind:markers
             activeTrail={selectedTrailIndex}
-            fitBounds="animate"
+            fitBounds={selectedList || selectedTrail ? "animate" : "off"}
+            clusterTrails={!selectedList && !selectedTrail}
+            onUnclusteredClick={(_, trail) => {
+                const list = lists.find((item) => item.id === trail.id);
+                if (list) {
+                    setCurrentList(list);
+                }
+            }}
             onselect={(trail) => {
-                selectedTrail = trail;
+                if (selectedList) {
+                    selectedTrail = trail;
+                }
+            }}
+            oninit={() => {
+                if (!selectedList && !selectedTrail) {
+                    fitOverviewOrFallback();
+                }
             }}
             showInfoPopup={true}
             showTerrain={true}
