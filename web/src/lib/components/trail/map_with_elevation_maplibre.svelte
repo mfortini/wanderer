@@ -143,6 +143,7 @@
     let followPlaybackCamera: boolean = $state(true);
     let enablePlayback3d: boolean = $state(true);
     let lastPlaybackTerrainExaggeration: number | null = null;
+    let playbackOwnsTerrain = false;
     let lastPlaybackCameraUpdate = 0;
     let playbackLayersInitialized = false;
     const playbackFollowZoomMax = 14.75;
@@ -712,12 +713,50 @@
         showPlaybackWaypointMedia(active);
     }
 
-    function syncPlaybackTerrain() {
-        if (!map?.getSource("terrain")) {
+    function shouldUsePlayback3d(status = playbackState?.status) {
+        return Boolean(
+            enableRoutePlayback &&
+                enablePlayback3d &&
+                isPlayback3dAllowed() &&
+                status === "playing",
+        );
+    }
+
+    function getPlaybackPitch(status = playbackState?.status) {
+        return shouldUsePlayback3d(status) ? 50 : 0;
+    }
+
+    function restorePlaybackOwnedTerrain() {
+        if (!map || !playbackOwnsTerrain) {
             return;
         }
-        const exaggeration = enablePlayback3d ? 1.35 : 1;
-        if (lastPlaybackTerrainExaggeration === exaggeration && map.getTerrain()) {
+        map.setTerrain(null);
+        playbackOwnsTerrain = false;
+        lastPlaybackTerrainExaggeration = null;
+        syncHillshadingVisibility();
+    }
+
+    function applyMapTerrain(
+        force = false,
+        status = playbackState?.status,
+    ) {
+        if (!map?.getSource("terrain") || !showTerrain || !enableRoutePlayback) {
+            return;
+        }
+        if (!shouldUsePlayback3d(status)) {
+            restorePlaybackOwnedTerrain();
+            return;
+        }
+        const exaggeration = 3.6;
+        const current = map.getTerrain();
+        if (!current) {
+            playbackOwnsTerrain = true;
+        }
+        if (
+            !force &&
+            current &&
+            lastPlaybackTerrainExaggeration === exaggeration
+        ) {
             return;
         }
         lastPlaybackTerrainExaggeration = exaggeration;
@@ -725,6 +764,7 @@
             source: "terrain",
             exaggeration,
         });
+        syncHillshadingVisibility();
     }
 
     function resetPlaybackCamera() {
@@ -732,7 +772,7 @@
             return;
         }
         playbackCameraBearing = null;
-        syncPlaybackTerrain();
+        applyMapTerrain(true, "paused");
         map.easeTo({
             pitch: 0,
             bearing: 0,
@@ -776,7 +816,7 @@
         map.easeTo({
             center: [state.position[0], state.position[1]],
             bearing: smoothedBearing,
-            pitch: enablePlayback3d && isPlayback3dAllowed() ? 42 : 0,
+            pitch: getPlaybackPitch(),
             zoom: targetZoom,
             duration: 900,
             easing: (t) => 1 - Math.pow(1 - t, 3),
@@ -791,6 +831,8 @@
         layerManager?.removeLayer(playbackLayerId);
         for (const layerId of [
             `${playbackLayerId}-line`,
+            `${playbackLayerId}-line-case`,
+            `${playbackLayerId}-ribbon`,
             `${playbackLayerId}-remaining`,
             `${playbackLayerId}-completed`,
         ]) {
@@ -800,6 +842,7 @@
         }
         for (const sourceId of [
             `${playbackLayerId}-source`,
+            `${playbackLayerId}-ribbon-source`,
             `${playbackLayerId}-remaining-source`,
             `${playbackLayerId}-completed-source`,
         ]) {
@@ -833,7 +876,15 @@
             ),
         );
 
+        const ribbonLayerId = `${playbackLayerId}-ribbon`;
+        const caseLayerId = `${playbackLayerId}-line-case`;
         const coloredLayerId = `${playbackLayerId}-line`;
+        if (map.getLayer(ribbonLayerId)) {
+            map.moveLayer(ribbonLayerId);
+        }
+        if (map.getLayer(caseLayerId)) {
+            map.moveLayer(caseLayerId);
+        }
         if (map.getLayer(coloredLayerId)) {
             map.moveLayer(coloredLayerId);
             setTrailPlaybackOpacity(0);
@@ -866,7 +917,7 @@
         playbackRouteGeometry = null;
         revokePlaybackMediaBlobCache();
         clearPlaybackWaypointMedia();
-        syncPlaybackTerrain();
+        applyMapTerrain();
         removePlaybackMarker();
         removePlaybackLayerArtifacts();
     }
@@ -930,8 +981,14 @@
         if ((state?.progress ?? 0) >= 1) {
             playback.seek(0);
         }
+        applyMapTerrain(true, "playing");
         playback.play();
-        syncPlaybackTerrain();
+        if (!followPlaybackCamera && map) {
+            map.easeTo({
+                pitch: getPlaybackPitch("playing"),
+                duration: 400,
+            });
+        }
     }
 
     function handlePlaybackProgressChange(progress: number) {
@@ -1797,9 +1854,14 @@
         onenable3dchange={(enabled) => {
             enablePlayback3d = enabled;
             lastPlaybackTerrainExaggeration = null;
-            syncPlaybackTerrain();
+            applyMapTerrain();
             if (!enabled) {
                 resetPlaybackCamera();
+            } else if (playbackState?.status === "playing" && map) {
+                map.easeTo({
+                    pitch: getPlaybackPitch("playing"),
+                    duration: 400,
+                });
             }
         }}
     />

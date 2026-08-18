@@ -5,8 +5,6 @@ export class TerrainLayer implements BaseLayer {
     spec: StyleSpecification;
 
     constructor(terrainURL: string, hillshadingURL?: string) {
-        const hillshadingEnabled = Boolean(hillshadingURL);
-
         this.spec = {
             version: 8,
             name: "terrain",
@@ -15,24 +13,29 @@ export class TerrainLayer implements BaseLayer {
                     type: "raster-dem",
                     url: terrainURL,
                 },
-                ...(hillshadingEnabled ? {
-                    hillshading: {
-                        type: "raster-dem",
-                        url: hillshadingURL
-                    }
-                } : {})
-
+                ...(hillshadingURL
+                    ? {
+                          hillshading: {
+                              type: "raster-dem",
+                              url: hillshadingURL,
+                          },
+                      }
+                    : {}),
             },
-            layers: hillshadingEnabled ? [{
-                id: "hillshading",
-                source: "terrain",
-                type: "hillshade",
-                layout: {
-                    visibility: "none",
+            layers: [
+                {
+                    id: "hillshading",
+                    source: "terrain",
+                    type: "hillshade",
+                    layout: {
+                        visibility: "none",
+                    },
+                    paint: {
+                        "hillshade-exaggeration": 0.75,
+                        "hillshade-illumination-anchor": "viewport",
+                    },
                 },
-            }] : []
-
-        }
-
+            ],
+        };
     }
 }
