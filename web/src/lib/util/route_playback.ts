@@ -18,6 +18,8 @@ export type RoutePlaybackState = {
     activePhotoDistance: number | null;
 };
 
+export const PHOTO_TRANSITION_MS = 500;
+
 type RoutePlaybackOptions = {
     geometry: RouteGeometryState;
     constantDurationMs?: number;
@@ -30,8 +32,6 @@ type RoutePlaybackOptions = {
 const DEFAULT_CONSTANT_DURATION_MS = 90_000;
 const DEFAULT_MAX_DURATION_MS = 60_000;
 const DEFAULT_PHOTO_DWELL_MS = 1500;
-const PHOTO_APPROACH_MS = 450;
-const PHOTO_DEPART_MS = 550;
 const PHOTO_HOLD_METERS = 3.5;
 const PHOTO_APPROACH_MIN_RATIO = 0.22;
 
@@ -51,7 +51,7 @@ function easeOutExpo(value: number) {
     if (t === 1) {
         return 1;
     }
-    return 1 - Math.pow(2, -10 * t);
+    return 1 - Math.pow(2, -8 * t);
 }
 
 function computeRealtimeDurationMs(geometry: RouteGeometryState) {
@@ -81,7 +81,10 @@ export class RoutePlayback {
     private visitedPhotoIndexes = new Set<number>();
     private dwellPhotoIndex: number | null = null;
     private dwellRemainingMs = 0;
-    private departElapsedMs = PHOTO_DEPART_MS;
+    private departElapsedMs = PHOTO_TRANSITION_MS;
+    private approachIndex: number | null = null;
+    private approachFromDistance = 0;
+    private approachElapsedMs = 0;
 
     constructor(options: RoutePlaybackOptions) {
         this.geometry = options.geometry;
@@ -133,7 +136,9 @@ export class RoutePlayback {
     private clearDwell() {
         this.dwellPhotoIndex = null;
         this.dwellRemainingMs = 0;
-        this.departElapsedMs = PHOTO_DEPART_MS;
+        this.departElapsedMs = PHOTO_TRANSITION_MS;
+        this.approachIndex = null;
+        this.approachElapsedMs = 0;
     }
 
     private nextPhotoIndex(distance: number, excludeIndex: number | null = null) {
@@ -155,7 +160,7 @@ export class RoutePlayback {
     }
 
     private approachMeters() {
-        return Math.max(12, this.metersPerMs() * PHOTO_APPROACH_MS);
+        return Math.max(12, this.metersPerMs() * PHOTO_TRANSITION_MS);
     }
 
     private isPhotoClose(distance: number, photoIndex: number) {
@@ -218,8 +223,8 @@ export class RoutePlayback {
             return approach + (1 - approach) * easeOutExpo(t);
         }
 
-        if (this.departElapsedMs < PHOTO_DEPART_MS) {
-            const t = this.departElapsedMs / PHOTO_DEPART_MS;
+        if (this.departElapsedMs < PHOTO_TRANSITION_MS) {
+            const t = this.departElapsedMs / PHOTO_TRANSITION_MS;
             return approach + (1 - approach) * easeOutExpo(t);
         }
 
@@ -245,11 +250,42 @@ export class RoutePlayback {
             speed: this.speed,
             elapsedMs: this.elapsedMs,
             durationMs: this.durationMs,
-            activePhotoDistance:
-                this.dwellPhotoIndex !== null
-                    ? this.photoDistances[this.dwellPhotoIndex] ?? null
-                    : null,
+            activePhotoDistance: this.activePhotoDistance(),
         };
+    }
+
+    private activePhotoDistance() {
+        if (this.dwellPhotoIndex !== null) {
+            return this.photoDistances[this.dwellPhotoIndex] ?? null;
+        }
+        if (this.approachIndex !== null) {
+            return this.photoDistances[this.approachIndex] ?? null;
+        }
+        return null;
+    }
+
+    private setDistance(distance: number) {
+        if (this.geometry.totalDistance <= 0) {
+            return;
+        }
+        this.progress = clamp01(distance / this.geometry.totalDistance);
+        this.elapsedMs = this.progress * this.durationMs;
+    }
+
+    private startApproach(index: number, fromDistance: number) {
+        this.approachIndex = index;
+        this.approachFromDistance = fromDistance;
+        this.approachElapsedMs = 0;
+        this.departElapsedMs = PHOTO_TRANSITION_MS;
+    }
+
+    private startDwell(index: number) {
+        this.approachIndex = null;
+        this.approachElapsedMs = 0;
+        this.dwellPhotoIndex = index;
+        this.dwellRemainingMs = this.photoDwellMs;
+        this.departElapsedMs = 0;
+        this.setDistance(this.photoDistances[index]);
     }
 
     private emitUpdate() {
@@ -259,15 +295,22 @@ export class RoutePlayback {
         }
     }
 
-    private startDwell(index: number) {
-        this.dwellPhotoIndex = index;
-        this.dwellRemainingMs = this.photoDwellMs;
-        this.departElapsedMs = 0;
-        const photoDistance = this.photoDistances[index];
-        if (this.geometry.totalDistance > 0) {
-            this.progress = clamp01(photoDistance / this.geometry.totalDistance);
-            this.elapsedMs = this.progress * this.durationMs;
+    private finishDwell(finishedIndex: number, distance: number) {
+        this.visitedPhotoIndexes.add(finishedIndex);
+        this.dwellPhotoIndex = null;
+        this.dwellRemainingMs = 0;
+
+        const chainedIndex = this.reachedPhotoIndex(distance, finishedIndex);
+        const upcomingIndex = this.nextPhotoIndex(distance, finishedIndex);
+        if (chainedIndex >= 0) {
+            this.startDwell(chainedIndex);
+            return;
         }
+        if (upcomingIndex >= 0 && this.isPhotoClose(distance, upcomingIndex)) {
+            this.startApproach(upcomingIndex, distance);
+            return;
+        }
+        this.departElapsedMs = 0;
     }
 
     private tick = (now: number) => {
@@ -282,53 +325,55 @@ export class RoutePlayback {
         const dt = Math.min(48, Math.max(0, now - this.lastTickMs));
         this.lastTickMs = now;
 
-        const currentDistance = this.progress * this.geometry.totalDistance;
-        const localSpeed = this.speedMultiplier(currentDistance);
-
-        this.elapsedMs = Math.max(0, this.elapsedMs + dt * this.speed * localSpeed);
-        this.progress = clamp01(this.durationMs > 0 ? this.elapsedMs / this.durationMs : 1);
-        this.clampToPhotoHold(this.progress * this.geometry.totalDistance);
-        const nextDistance = this.progress * this.geometry.totalDistance;
-
-        const arrivedIndex = this.reachedPhotoIndex(
-            nextDistance,
-            this.dwellPhotoIndex,
-        );
-        if (this.dwellPhotoIndex === null && arrivedIndex >= 0) {
-            this.startDwell(arrivedIndex);
-            this.departElapsedMs = PHOTO_DEPART_MS;
-        }
-
         if (this.dwellPhotoIndex !== null) {
+            const localSpeed = this.holdRatio();
+            this.elapsedMs = Math.max(0, this.elapsedMs + dt * this.speed * localSpeed);
+            this.progress = clamp01(
+                this.durationMs > 0 ? this.elapsedMs / this.durationMs : 1,
+            );
+            this.clampToPhotoHold(this.progress * this.geometry.totalDistance);
             this.dwellRemainingMs -= dt;
             if (this.dwellRemainingMs <= 0) {
-                this.visitedPhotoIndexes.add(this.dwellPhotoIndex);
-                const finishedIndex = this.dwellPhotoIndex;
-                this.dwellPhotoIndex = null;
-                this.dwellRemainingMs = 0;
-
-                const chainedIndex = this.reachedPhotoIndex(nextDistance, finishedIndex);
-                const upcomingIndex = this.nextPhotoIndex(nextDistance, finishedIndex);
-                if (chainedIndex >= 0) {
-                    this.startDwell(chainedIndex);
-                } else if (
-                    upcomingIndex >= 0 &&
-                    this.isPhotoClose(nextDistance, upcomingIndex)
-                ) {
-                    this.departElapsedMs = PHOTO_DEPART_MS;
-                } else {
-                    this.departElapsedMs = 0;
-                }
-            }
-        } else if (this.departElapsedMs < PHOTO_DEPART_MS) {
-            const upcomingIndex = this.nextPhotoIndex(nextDistance);
-            if (upcomingIndex >= 0 && this.isPhotoClose(nextDistance, upcomingIndex)) {
-                this.departElapsedMs = PHOTO_DEPART_MS;
-            } else {
-                this.departElapsedMs = Math.min(
-                    PHOTO_DEPART_MS,
-                    this.departElapsedMs + dt,
+                this.finishDwell(
+                    this.dwellPhotoIndex,
+                    this.progress * this.geometry.totalDistance,
                 );
+            }
+        } else if (this.approachIndex !== null) {
+            this.approachElapsedMs += dt;
+            const t = clamp01(this.approachElapsedMs / PHOTO_TRANSITION_MS);
+            const photoDistance = this.photoDistances[this.approachIndex];
+            const distance =
+                this.approachFromDistance +
+                (photoDistance - this.approachFromDistance) * easeOutExpo(t);
+            this.setDistance(distance);
+            if (t >= 1) {
+                this.startDwell(this.approachIndex);
+            }
+        } else {
+            const currentDistance = this.progress * this.geometry.totalDistance;
+            const upcomingIndex = this.nextPhotoIndex(currentDistance);
+            if (upcomingIndex >= 0 && this.isPhotoClose(currentDistance, upcomingIndex)) {
+                this.startApproach(upcomingIndex, currentDistance);
+            } else {
+                const localSpeed = this.speedMultiplier(currentDistance);
+                this.elapsedMs = Math.max(
+                    0,
+                    this.elapsedMs + dt * this.speed * localSpeed,
+                );
+                this.progress = clamp01(
+                    this.durationMs > 0 ? this.elapsedMs / this.durationMs : 1,
+                );
+                const nextDistance = this.progress * this.geometry.totalDistance;
+                const arrivedIndex = this.reachedPhotoIndex(nextDistance);
+                if (arrivedIndex >= 0) {
+                    this.startDwell(arrivedIndex);
+                } else if (this.departElapsedMs < PHOTO_TRANSITION_MS) {
+                    this.departElapsedMs = Math.min(
+                        PHOTO_TRANSITION_MS,
+                        this.departElapsedMs + dt,
+                    );
+                }
             }
         }
 

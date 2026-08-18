@@ -10,6 +10,8 @@
         followCamera?: boolean;
         enable3d?: boolean;
         allow3d?: boolean;
+        recording?: boolean;
+        canRecord?: boolean;
         distanceLabel?: string;
         durationLabel?: string;
         onplaypause?: () => void;
@@ -17,6 +19,7 @@
         onphotodurationchange?: (durationMs: number) => void;
         onfollowcamerachange?: (enabled: boolean) => void;
         onenable3dchange?: (enabled: boolean) => void;
+        onrecordtoggle?: () => void;
     }
 
     let {
@@ -28,6 +31,8 @@
         followCamera = true,
         enable3d = false,
         allow3d = true,
+        recording = false,
+        canRecord = false,
         distanceLabel = "",
         durationLabel = "",
         onplaypause,
@@ -35,6 +40,7 @@
         onphotodurationchange,
         onfollowcamerachange,
         onenable3dchange,
+        onrecordtoggle,
     }: Props = $props();
 
     const photoDurationOptions = [1000, 1500, 2000, 3000];
@@ -52,6 +58,16 @@
                 <i class="fa-solid fa-{playing ? 'pause' : 'play'} mr-2"></i>
                 {playing ? $_("pause-route") : $_("play-route")}
             </button>
+            {#if canRecord}
+                <button
+                    class="btn-secondary shrink-0"
+                    class:text-red-600={recording}
+                    onclick={() => onrecordtoggle?.()}
+                >
+                    <i class="fa-solid fa-{recording ? 'stop' : 'circle'} mr-2 {recording ? '' : 'text-red-600'}"></i>
+                    {recording ? $_("stop-recording") : $_("record-animation")}
+                </button>
+            {/if}
             <input
                 class="w-full"
                 type="range"
