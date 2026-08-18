@@ -1,5 +1,6 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
+    import { browser } from "$app/environment";
     import { page } from "$app/state";
     import ActorSearch from "$lib/components/actor_search.svelte";
     import type { DropdownItem } from "$lib/components/base/dropdown.svelte";
@@ -159,6 +160,9 @@
     }
 
     $effect(() => {
+        if (!browser) {
+            return;
+        }
         if (selectedList || selectedTrail) {
             overviewFitKey = "";
             return;
