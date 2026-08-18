@@ -15,7 +15,7 @@
         WAYPOINT_FOCUS_EVENT,
         type WaypointFocusDetail,
     } from "$lib/util/waypoint_map_util";
-    import { decodePolyline } from "$lib/util/polyline_util";
+    import { decodePolyline, polylineToGeoJSON } from "$lib/util/polyline_util";
     import type { ElevationProfileControl } from "$lib/vendor/maplibre-elevation-profile/elevationprofile-control";
     import { FullscreenControl } from "$lib/vendor/maplibre-fullscreen/fullscreen-control";
     import MaplibreGraticule from "$lib/vendor/maplibre-graticule/maplibre-graticule";
@@ -231,6 +231,8 @@
                     fc = t.expand.gpx.toGeoJSON();
                 } else if (t.expand?.gpx_data) {
                     fc = GPX.parse(t.expand.gpx_data).toGeoJSON();
+                } else if (t.polyline) {
+                    fc = polylineToGeoJSON(t.polyline, 5) as FeatureCollection;
                 }
 
                 if (fc) {
