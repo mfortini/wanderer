@@ -1143,7 +1143,9 @@
     }
 
     onDestroy(() => {
-        document.removeEventListener(WAYPOINT_FOCUS_EVENT, handleWaypointFocus);
+        if (typeof document !== "undefined") {
+            document.removeEventListener(WAYPOINT_FOCUS_EVENT, handleWaypointFocus);
+        }
         map?.remove();
     });
 
