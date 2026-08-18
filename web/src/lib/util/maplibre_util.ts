@@ -12,8 +12,9 @@ import { getFileURL } from "./file_util";
 import { formatDistance, formatElevation, formatTimeHHMM } from "./format_util";
 import { icons } from "./icon_util";
 import {
+    focusWaypoint,
     getWaypointPopupMedia,
-    scrollToWaypointAnchor,
+    highlightElevationWaypoint,
 } from "./waypoint_map_util";
 
 export class FontawesomeMarker extends M.Marker {
@@ -99,13 +100,13 @@ export function createMarkerFromWaypoint(waypoint: Waypoint, onDragEnd?: (marker
 
     content.addEventListener("click", (e) => {
         e.stopPropagation();
-        scrollToWaypointAnchor(waypoint.id);
+        focusWaypoint(waypoint, "map");
     });
 
     const popup = new M.Popup({ offset: 25, maxWidth: "280px" }).setDOMContent(
         content
     );
-    bindExclusivePopup(popup);
+    bindExclusivePopup(popup, waypoint);
     marker
         .setLngLat([waypoint.lon, waypoint.lat])
         .setPopup(popup)
@@ -124,16 +125,18 @@ export function createMarkerFromWaypoint(waypoint: Waypoint, onDragEnd?: (marker
 
 let exclusiveWaypointPopup: M.Popup | undefined;
 
-function bindExclusivePopup(popup: M.Popup) {
+function bindExclusivePopup(popup: M.Popup, waypoint: Waypoint) {
     popup.on("open", () => {
         if (exclusiveWaypointPopup && exclusiveWaypointPopup !== popup) {
             exclusiveWaypointPopup.remove();
         }
         exclusiveWaypointPopup = popup;
+        highlightElevationWaypoint(waypoint.id);
     });
     popup.on("close", () => {
         if (exclusiveWaypointPopup === popup) {
             exclusiveWaypointPopup = undefined;
+            highlightElevationWaypoint(undefined);
         }
     });
 }

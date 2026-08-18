@@ -11,6 +11,10 @@
         createPopupFromTrail,
         FontawesomeMarker,
     } from "$lib/util/maplibre_util";
+    import {
+        WAYPOINT_FOCUS_EVENT,
+        type WaypointFocusDetail,
+    } from "$lib/util/waypoint_map_util";
     import { decodePolyline } from "$lib/util/polyline_util";
     import type { ElevationProfileControl } from "$lib/vendor/maplibre-elevation-profile/elevationprofile-control";
     import { FullscreenControl } from "$lib/vendor/maplibre-fullscreen/fullscreen-control";
@@ -847,6 +851,26 @@
         markers = [];
     }
 
+    function handleWaypointFocus(event: Event) {
+        const detail = (event as CustomEvent<WaypointFocusDetail>).detail;
+        if (!detail?.waypointId) {
+            return;
+        }
+
+        if (detail.source === "profile") {
+            const marker = markers.find(
+                (item) => item.getElement().id === detail.waypointId,
+            );
+            if (marker && !marker.getPopup()?.isOpen()) {
+                marker.togglePopup();
+            }
+        }
+
+        if (Number.isFinite(detail.lat) && Number.isFinite(detail.lon)) {
+            epc?.moveCrosshair(detail.lat, detail.lon);
+        }
+    }
+
     function toggleEpcTheme() {
         if ($theme == "dark") {
             epc?.toggleTheme({
@@ -872,6 +896,7 @@
     let geolocateControl: M.GeolocateControl;
 
     onMount(async () => {
+        document.addEventListener(WAYPOINT_FOCUS_EVENT, handleWaypointFocus);
         const initialState = {
             lng: 0,
             lat: 0,
@@ -1065,6 +1090,7 @@
     }
 
     onDestroy(() => {
+        document.removeEventListener(WAYPOINT_FOCUS_EVENT, handleWaypointFocus);
         map?.remove();
     });
 

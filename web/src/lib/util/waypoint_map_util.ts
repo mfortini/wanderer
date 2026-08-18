@@ -6,6 +6,23 @@ export type WaypointPopupMedia = {
     video: boolean;
 };
 
+export const WAYPOINT_FOCUS_EVENT = "wanderer:focus-waypoint";
+
+export type WaypointFocusDetail = {
+    waypointId: string;
+    lat: number;
+    lon: number;
+    source: "map" | "profile";
+};
+
+export type WaypointFocusTarget = {
+    id?: string;
+    lat: number;
+    lon: number;
+};
+
+let activeElevationWaypointId: string | undefined;
+
 export function waypointAnchorId(waypointId?: string) {
     return waypointId ? `waypoint-${waypointId}` : undefined;
 }
@@ -39,4 +56,53 @@ export function scrollToWaypointAnchor(waypointId?: string) {
     const element = document.getElementById(id);
     element?.scrollIntoView({ behavior: "smooth", block: "center" });
     return element ?? null;
+}
+
+export function highlightElevationWaypoint(waypointId?: string) {
+    activeElevationWaypointId = waypointId;
+    applyElevationWaypointHighlight();
+}
+
+export function applyElevationWaypointHighlight() {
+    if (typeof document === "undefined") {
+        return;
+    }
+
+    document.querySelectorAll(".wp-marker-active").forEach((element) => {
+        element.classList.remove("wp-marker-active");
+    });
+
+    if (!activeElevationWaypointId) {
+        return;
+    }
+
+    const selector = `.wp-marker[data-waypoint-id="${activeElevationWaypointId}"]`;
+    document.querySelector(selector)?.classList.add("wp-marker-active");
+}
+
+export function focusWaypoint(
+    waypoint?: WaypointFocusTarget | null,
+    source: WaypointFocusDetail["source"] = "map",
+) {
+    if (!waypoint?.id) {
+        return;
+    }
+
+    scrollToWaypointAnchor(waypoint.id);
+    highlightElevationWaypoint(waypoint.id);
+
+    if (typeof document === "undefined") {
+        return;
+    }
+
+    document.dispatchEvent(
+        new CustomEvent<WaypointFocusDetail>(WAYPOINT_FOCUS_EVENT, {
+            detail: {
+                waypointId: waypoint.id,
+                lat: waypoint.lat,
+                lon: waypoint.lon,
+                source,
+            },
+        }),
+    );
 }
