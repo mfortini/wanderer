@@ -169,6 +169,48 @@ func getStoredBounds(r *core.Record) [4]float64 {
 	return [4]float64{minLat, maxLat, minLon, maxLon}
 }
 
+const maxListPreviewPolylines = 30
+
+func listAggregateBounds(trails []*core.Record) (minLat, maxLat, minLon, maxLon float64, ok bool) {
+	minLat, minLon = 90.0, 180.0
+	maxLat, maxLon = -90.0, -180.0
+
+	for _, t := range trails {
+		bounds := getStoredBounds(t)
+		if bounds[0] == 0 && bounds[1] == 0 && bounds[2] == 0 && bounds[3] == 0 {
+			continue
+		}
+		if bounds[0] < minLat {
+			minLat = bounds[0]
+		}
+		if bounds[1] > maxLat {
+			maxLat = bounds[1]
+		}
+		if bounds[2] < minLon {
+			minLon = bounds[2]
+		}
+		if bounds[3] > maxLon {
+			maxLon = bounds[3]
+		}
+		ok = true
+	}
+
+	return minLat, maxLat, minLon, maxLon, ok
+}
+
+func listTrailPolylines(trails []*core.Record) []string {
+	polylines := make([]string, 0, len(trails))
+	for _, t := range trails {
+		if p := t.GetString("polyline"); p != "" {
+			polylines = append(polylines, p)
+			if len(polylines) >= maxListPreviewPolylines {
+				break
+			}
+		}
+	}
+	return polylines
+}
+
 func listCentroid(trails []*core.Record) (lat, lon float64, ok bool) {
 	n := 0
 	for _, t := range trails {
@@ -259,7 +301,9 @@ func documentFromListRecord(r *core.Record, author *core.Record, includeShares b
 		"iri":            r.GetString("iri"),
 	}
 
-	if lat, lon, ok := listCentroid(r.ExpandedAll("trails")); ok {
+	expandedTrails := r.ExpandedAll("trails")
+
+	if lat, lon, ok := listCentroid(expandedTrails); ok {
 		document["lat"] = lat
 		document["lon"] = lon
 	} else if remoteDoc != nil {
@@ -268,6 +312,42 @@ func documentFromListRecord(r *core.Record, author *core.Record, includeShares b
 		}
 		if lon, ok := floatFromAny(remoteDoc["lon"]); ok {
 			document["lon"] = lon
+		}
+	}
+
+	if minLat, maxLat, minLon, maxLon, ok := listAggregateBounds(expandedTrails); ok {
+		document["min_lat"] = minLat
+		document["max_lat"] = maxLat
+		document["min_lon"] = minLon
+		document["max_lon"] = maxLon
+	} else if remoteDoc != nil {
+		if v, ok := floatFromAny(remoteDoc["min_lat"]); ok {
+			document["min_lat"] = v
+		}
+		if v, ok := floatFromAny(remoteDoc["max_lat"]); ok {
+			document["max_lat"] = v
+		}
+		if v, ok := floatFromAny(remoteDoc["min_lon"]); ok {
+			document["min_lon"] = v
+		}
+		if v, ok := floatFromAny(remoteDoc["max_lon"]); ok {
+			document["max_lon"] = v
+		}
+	}
+
+	if polylines := listTrailPolylines(expandedTrails); len(polylines) > 0 {
+		document["trail_polylines"] = polylines
+	} else if remoteDoc != nil {
+		if raw, ok := remoteDoc["trail_polylines"].([]any); ok && len(raw) > 0 {
+			polylines := make([]string, 0, len(raw))
+			for _, item := range raw {
+				if p, ok := item.(string); ok && p != "" {
+					polylines = append(polylines, p)
+				}
+			}
+			if len(polylines) > 0 {
+				document["trail_polylines"] = polylines
+			}
 		}
 	}
 

@@ -15,7 +15,7 @@
         WAYPOINT_FOCUS_EVENT,
         type WaypointFocusDetail,
     } from "$lib/util/waypoint_map_util";
-    import { decodePolyline, polylineToGeoJSON } from "$lib/util/polyline_util";
+    import { polylineToGeoJSON } from "$lib/util/polyline_util";
     import type { ElevationProfileControl } from "$lib/vendor/maplibre-elevation-profile/elevationprofile-control";
     import { FullscreenControl } from "$lib/vendor/maplibre-fullscreen/fullscreen-control";
     import MaplibreGraticule from "$lib/vendor/maplibre-graticule/maplibre-graticule";
@@ -231,7 +231,7 @@
                     fc = t.expand.gpx.toGeoJSON();
                 } else if (t.expand?.gpx_data) {
                     fc = GPX.parse(t.expand.gpx_data).toGeoJSON();
-                } else if (t.polyline) {
+                } else if (t.polyline && !clusterTrails) {
                     fc = polylineToGeoJSON(
                         t.polyline,
                         5,
@@ -253,7 +253,12 @@
             }
 
             if (clusterTrails) {
-                if (!serverClusters && t.lat !== undefined && t.lon !== undefined) {
+                if (
+                    !serverClusters &&
+                    t.lat !== undefined &&
+                    t.lon !== undefined &&
+                    !t.polyline
+                ) {
                     clusterData.features.push({
                         id: t.id,
                         type: "Feature",
@@ -272,6 +277,14 @@
                 }
 
                 if (t.polyline) {
+                    const previewGeojson = polylineToGeoJSON(
+                        t.polyline,
+                        5,
+                        t.lat !== undefined && t.lon !== undefined
+                            ? { lat: t.lat, lon: t.lon }
+                            : undefined,
+                    );
+                    const groupId = t.id?.split("#")[0] ?? t.id ?? "";
                     previewData.features.push({
                         id: t.id,
                         type: "Feature",
@@ -280,15 +293,12 @@
                             bounding_box_diagonal: t.bounding_box_diagonal,
                             color: trailColors[
                                 hashStringToIndex(
-                                    t.id ?? "",
+                                    groupId,
                                     trailColors.length,
                                 )
                             ],
                         },
-                        geometry: {
-                            type: "LineString",
-                            coordinates: decodePolyline(t.polyline, 5),
-                        },
+                        geometry: previewGeojson.features[0].geometry,
                     });
                 }
             }
@@ -336,8 +346,20 @@
             const hasClusterPoints =
                 clusterTrails &&
                 trails.some(
-                    (t) => t.lat !== undefined && t.lon !== undefined,
+                    (t) =>
+                        t.lat !== undefined &&
+                        t.lon !== undefined &&
+                        !t.polyline,
                 );
+            const hasPreviewPolylines =
+                clusterTrails && trails.some((t) => t.polyline);
+            const hasRecordBounds = trails.some(
+                (t) =>
+                    t.min_lat !== undefined &&
+                    t.max_lat !== undefined &&
+                    t.min_lon !== undefined &&
+                    t.max_lon !== undefined,
+            );
 
             if (
                 activeTrail !== null &&
@@ -346,7 +368,12 @@
                 gpxDataMap[trails[activeTrail].id!]
             ) {
                 focusTrail(trails[activeTrail]);
-            } else if (currentBboxes.length > 0 || hasClusterPoints) {
+            } else if (
+                currentBboxes.length > 0 ||
+                hasClusterPoints ||
+                hasPreviewPolylines ||
+                hasRecordBounds
+            ) {
                 flyToBounds();
             }
         } else if (drawing && activeTrail !== null && mapLoaded) {
@@ -554,16 +581,23 @@
 
         map!.fitBounds(boundsToFit, {
             animate: fitBounds == "animate",
-            padding: {
-                top: 16,
-                left: 16,
-                right: 16,
-                bottom:
-                    16 +
-                    (epc?.isProfileShown && !elevationProfileContainer
-                        ? map!.getContainer().clientHeight * 0.3
-                        : 0),
-            },
+            padding: clusterTrails
+                ? {
+                      top: 64,
+                      left: 64,
+                      right: 64,
+                      bottom: 64,
+                  }
+                : {
+                      top: 16,
+                      left: 16,
+                      right: 16,
+                      bottom:
+                          16 +
+                          (epc?.isProfileShown && !elevationProfileContainer
+                              ? map!.getContainer().clientHeight * 0.3
+                              : 0),
+                  },
             maxZoom: clusterTrails ? 12 : 18,
         });
     }
@@ -667,9 +701,24 @@
                                     t.id ===
                                     (e as any).features[0].properties.trail,
                             );
-                            if (!hasTrailDetails(trail)) return;
+                            if (!hasTrailDetails(trail) || onUnclusteredClick)
+                                return;
                             highlightCluster(trail, e.lngLat);
                         },
+                        ...(onUnclusteredClick
+                            ? {
+                                  onMouseUp: (e: M.MapMouseEvent) => {
+                                      const trailId = (e as any).features?.[0]
+                                          ?.properties?.trail;
+                                      const trail = trails.find(
+                                          (t) => t.id === trailId,
+                                      );
+                                      if (trail) {
+                                          onUnclusteredClick(e, trail);
+                                      }
+                                  },
+                              }
+                            : {}),
                     },
                 },
             }),

@@ -32,6 +32,11 @@ export type ListSearchResult = {
     iri?: string;
     lat?: number;
     lon?: number;
+    min_lat?: number;
+    max_lat?: number;
+    min_lon?: number;
+    max_lon?: number;
+    trail_polylines?: string[];
 }
 
 type NominatimResponse = {

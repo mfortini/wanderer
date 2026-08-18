@@ -78,11 +78,7 @@
         (selectedTrail as Trail | null)?.expand?.waypoints_via_trail,
     );
 
-    let overviewTrails = $derived(
-        lists
-            .map(listToOverviewTrail)
-            .filter((trail): trail is Trail => trail !== null),
-    );
+    let overviewTrails = $derived(lists.flatMap(listToOverviewTrails));
 
     let mapTrails = $derived(
         selectedTrail
@@ -90,21 +86,50 @@
             : (selectedList?.expand?.trails ?? overviewTrails),
     );
 
-    function listToOverviewTrail(list: List): Trail | null {
+    function applyListBounds(trail: Trail, list: List) {
+        trail.min_lat = list.min_lat;
+        trail.max_lat = list.max_lat;
+        trail.min_lon = list.min_lon;
+        trail.max_lon = list.max_lon;
+    }
+
+    function listToOverviewTrails(list: List): Trail[] {
+        const polylines = list.trail_polylines ?? [];
+
+        if (polylines.length > 0) {
+            return polylines.map((polyline, index) => {
+                const trail = new Trail(list.name, {
+                    id: `${list.id}#${index}`,
+                    lat: list.lat,
+                    lon: list.lon,
+                    polyline,
+                });
+                trail.author = list.author;
+                applyListBounds(trail, list);
+                return trail;
+            });
+        }
+
         if (
             list.lat == null ||
             list.lon == null ||
             (list.lat === 0 && list.lon === 0)
         ) {
-            return null;
+            return [];
         }
+
         const trail = new Trail(list.name, {
             id: list.id,
             lat: list.lat,
             lon: list.lon,
         });
         trail.author = list.author;
-        return trail;
+        applyListBounds(trail, list);
+        return [trail];
+    }
+
+    function listIdFromOverviewTrail(trail: Trail) {
+        return trail.id?.split("#")[0] ?? trail.id;
     }
 
     async function fitOverviewOrFallback() {
@@ -126,7 +151,7 @@
                         [bbox.min_lon, bbox.min_lat],
                         [bbox.max_lon, bbox.max_lat],
                     ],
-                    { animate: true, padding: 32, maxZoom: 12 },
+                    { animate: true, padding: 64, maxZoom: 12 },
                 );
             }
         } catch {
@@ -465,7 +490,8 @@
             fitBounds={selectedList || selectedTrail ? "animate" : "off"}
             clusterTrails={!selectedList && !selectedTrail}
             onUnclusteredClick={(_, trail) => {
-                const list = lists.find((item) => item.id === trail.id);
+                const listId = listIdFromOverviewTrail(trail);
+                const list = lists.find((item) => item.id === listId);
                 if (list) {
                     setCurrentList(list);
                 }

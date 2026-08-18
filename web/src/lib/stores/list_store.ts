@@ -268,6 +268,11 @@ export async function searchResultToLists(hits: Hits<ListSearchResult>): Promise
             iri: h.iri,
             lat: h.lat,
             lon: h.lon,
+            min_lat: h.min_lat,
+            max_lat: h.max_lat,
+            min_lon: h.min_lon,
+            max_lon: h.max_lon,
+            trail_polylines: h.trail_polylines,
             expand: {
                 author: {
                     icon: h.author_avatar,
