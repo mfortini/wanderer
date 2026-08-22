@@ -12,6 +12,11 @@
         allow3d?: boolean;
         recording?: boolean;
         canRecord?: boolean;
+        warmingTiles?: boolean;
+        recordOrientation?: "landscape" | "portrait";
+        recordFileFormat?: "mp4" | "webm";
+        recordMp4Supported?: boolean;
+        recordWebmSupported?: boolean;
         distanceLabel?: string;
         durationLabel?: string;
         onplaypause?: () => void;
@@ -19,6 +24,8 @@
         onphotodurationchange?: (durationMs: number) => void;
         onfollowcamerachange?: (enabled: boolean) => void;
         onenable3dchange?: (enabled: boolean) => void;
+        onrecordorientationchange?: (orientation: "landscape" | "portrait") => void;
+        onrecordfileformatchange?: (format: "mp4" | "webm") => void;
         onrecordtoggle?: () => void;
     }
 
@@ -33,6 +40,11 @@
         allow3d = true,
         recording = false,
         canRecord = false,
+        warmingTiles = false,
+        recordOrientation = "landscape",
+        recordFileFormat = "mp4",
+        recordMp4Supported = false,
+        recordWebmSupported = true,
         distanceLabel = "",
         durationLabel = "",
         onplaypause,
@@ -40,6 +52,8 @@
         onphotodurationchange,
         onfollowcamerachange,
         onenable3dchange,
+        onrecordorientationchange,
+        onrecordfileformatchange,
         onrecordtoggle,
     }: Props = $props();
 
@@ -54,14 +68,23 @@
 {#if visible}
     <div class="route-playback-control bg-menu-background border-t border-black/10 dark:border-white/10 p-3 md:p-4">
         <div class="flex items-center gap-2">
-            <button class="btn-secondary shrink-0" onclick={() => onplaypause?.()}>
+            <button
+                class="btn-secondary shrink-0"
+                disabled={warmingTiles}
+                onclick={() => onplaypause?.()}
+            >
                 <i class="fa-solid fa-{playing ? 'pause' : 'play'} mr-2"></i>
-                {playing ? $_("pause-route") : $_("play-route")}
+                {warmingTiles
+                    ? $_("preparing-map-tiles")
+                    : playing
+                      ? $_("pause-route")
+                      : $_("play-route")}
             </button>
             {#if canRecord}
                 <button
                     class="btn-secondary shrink-0"
                     class:text-red-600={recording}
+                    disabled={warmingTiles}
                     onclick={() => onrecordtoggle?.()}
                 >
                     <i class="fa-solid fa-{recording ? 'stop' : 'circle'} mr-2 {recording ? '' : 'text-red-600'}"></i>
@@ -107,6 +130,46 @@
                         <option value={String(option)}>{formatPhotoDuration(option)}</option>
                     {/each}
                 </select>
+
+                {#if canRecord}
+                    <label class="text-sm">{$_("record-orientation")}</label>
+                    <select
+                        class="input py-1 px-2 min-w-28"
+                        value={recordOrientation}
+                        disabled={recording}
+                        onchange={(event) =>
+                            onrecordorientationchange?.(
+                                (event.currentTarget as HTMLSelectElement).value as
+                                    | "landscape"
+                                    | "portrait",
+                            )}
+                    >
+                        <option value="landscape">{$_("record-landscape")}</option>
+                        <option value="portrait">{$_("record-portrait")}</option>
+                    </select>
+
+                    {#if recordMp4Supported || recordWebmSupported}
+                        <label class="text-sm">{$_("record-file-format")}</label>
+                        <select
+                            class="input py-1 px-2 min-w-24"
+                            value={recordFileFormat}
+                            disabled={recording}
+                            onchange={(event) =>
+                                onrecordfileformatchange?.(
+                                    (event.currentTarget as HTMLSelectElement).value as
+                                        | "mp4"
+                                        | "webm",
+                                )}
+                        >
+                            {#if recordMp4Supported}
+                                <option value="mp4">{$_("record-format-mp4")}</option>
+                            {/if}
+                            {#if recordWebmSupported}
+                                <option value="webm">{$_("record-format-webm")}</option>
+                            {/if}
+                        </select>
+                    {/if}
+                {/if}
 
                 <label class="flex items-center gap-2 text-sm">
                     <input

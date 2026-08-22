@@ -19,6 +19,7 @@
         routeGeometryFromGeoJson,
         buildSpeedColoredRoute,
         distanceAlongRouteForPoint,
+        interpolateAtDistance,
         type RouteGeometryState,
     } from "$lib/util/route_geometry";
     import {
@@ -167,7 +168,17 @@
     let playbackRecordMimeType = "video/webm";
     let playbackRecordFrameId = 0;
     let playbackRestoreElevationAfterRecord = false;
-    let playbackMapVideo: HTMLVideoElement | null = null;
+    let playbackRecordSize: { width: number; height: number } | null = null;
+    let playbackRecordOrientation: "landscape" | "portrait" = $state("landscape");
+    let playbackRecordFileFormat: "mp4" | "webm" = $state("webm");
+    let playbackRecordMp4Supported = $state(false);
+    let playbackRecordWebmSupported = $state(false);
+    const playbackRecordLandscape = { width: 1920, height: 1080 };
+    const playbackRecordPortrait = { width: 1080, height: 1920 };
+    let playbackTilesPrewarmedFor: string | null = null;
+    let playbackDesirePlaying = false;
+    let playbackPausedForTiles = false;
+    let playbackWarmingTiles = $state(false);
     let mapResizeObserver: ResizeObserver | null = null;
     let playbackOverlayLayers: Array<{
         id: string;
@@ -295,7 +306,7 @@
         });
     });
     $effect(() => {
-        const ready = playbackReady;
+        const ready = playbackReady && enableRoutePlayback;
         const open = playbackPanelOpen;
         const title = $_("route-playback");
         if (playbackToggleContainer) {
@@ -881,6 +892,122 @@
         return playbackCameraBearing;
     }
 
+    function waitForMapTiles(timeoutMs = 2000): Promise<void> {
+        if (!map || map.areTilesLoaded()) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            let settled = false;
+            const done = () => {
+                if (settled || !map) {
+                    return;
+                }
+                settled = true;
+                map.off("idle", done);
+                map.off("sourcedata", onSourceData);
+                window.clearTimeout(timer);
+                resolve();
+            };
+            const onSourceData = () => {
+                if (map?.areTilesLoaded()) {
+                    done();
+                }
+            };
+            const timer = window.setTimeout(done, timeoutMs);
+            map.once("idle", done);
+            map.on("sourcedata", onSourceData);
+            map.triggerRepaint();
+        });
+    }
+
+    async function prewarmPlaybackRouteTiles() {
+        if (
+            !map ||
+            !playbackRouteGeometry ||
+            playbackRouteGeometry.positions.length < 2 ||
+            !playbackTrailId
+        ) {
+            return;
+        }
+        if (playbackTilesPrewarmedFor === playbackTrailId) {
+            return;
+        }
+
+        playbackWarmingTiles = true;
+        const geometry = playbackRouteGeometry;
+        const sampleCount = Math.min(
+            28,
+            Math.max(10, Math.ceil(geometry.totalDistance / 500)),
+        );
+        const zoom = Math.min(
+            playbackFollowZoomMax,
+            Math.max(map.getZoom(), 12) + playbackFollowZoomBoost,
+        );
+        const pitch = getPlaybackPitch("playing");
+        const restore = {
+            center: map.getCenter(),
+            zoom: map.getZoom(),
+            bearing: map.getBearing(),
+            pitch: map.getPitch(),
+        };
+        const container = map.getContainer();
+        const previousOpacity = container.style.opacity;
+        container.style.opacity = "0.25";
+
+        try {
+            for (let i = 0; i < sampleCount; i += 1) {
+                const distance =
+                    (geometry.totalDistance * i) / Math.max(1, sampleCount - 1);
+                const sample = interpolateAtDistance(geometry, distance);
+                if (!sample) {
+                    continue;
+                }
+                map.jumpTo({
+                    center: [sample.position[0], sample.position[1]],
+                    zoom,
+                    pitch,
+                    bearing: sample.bearing,
+                });
+                await waitForMapTiles(900);
+            }
+            map.jumpTo(restore);
+            await waitForMapTiles(2500);
+            playbackTilesPrewarmedFor = playbackTrailId;
+        } finally {
+            container.style.opacity = previousOpacity;
+            playbackWarmingTiles = false;
+        }
+    }
+
+    function stallPlaybackUntilTilesLoaded() {
+        // During recording, pausing for tiles makes the play button thrash and
+        // chops the timeline; prewarm already loaded the route viewports.
+        if (
+            !map ||
+            !playback ||
+            playbackRecording ||
+            playbackPausedForTiles ||
+            playbackWarmingTiles ||
+            map.areTilesLoaded()
+        ) {
+            return;
+        }
+        if (playback.getState()?.status !== "playing") {
+            return;
+        }
+        playbackPausedForTiles = true;
+        playback.pause();
+        void waitForMapTiles(3500).then(() => {
+            if (!playbackPausedForTiles) {
+                return;
+            }
+            playbackPausedForTiles = false;
+            if (playbackDesirePlaying && playback) {
+                playback.play();
+            }
+        });
+    }
+
     function updatePlaybackCamera(state: RoutePlaybackState) {
         if (!map || !followPlaybackCamera || state.status !== "playing") {
             return;
@@ -982,6 +1109,8 @@
         epc?.seekToProgress(state.progress);
         syncPlaybackWaypointMedia(state);
         if (state.progress >= 1) {
+            playbackDesirePlaying = false;
+            playbackPausedForTiles = false;
             resetPlaybackCamera();
             if (playbackRecording) {
                 stopPlaybackRecording();
@@ -989,9 +1118,21 @@
             return;
         }
         updatePlaybackCamera(state);
+        stallPlaybackUntilTilesLoaded();
     }
 
     function destroyRoutePlayback() {
+        const wasActive =
+            playbackDesirePlaying ||
+            playbackPausedForTiles ||
+            Boolean(playback) ||
+            (map !== undefined &&
+                map !== null &&
+                (Math.abs(map.getPitch()) > 0.5 || Math.abs(map.getBearing()) > 0.5));
+        playbackDesirePlaying = false;
+        playbackPausedForTiles = false;
+        playbackWarmingTiles = false;
+        playbackTilesPrewarmedFor = null;
         playback?.destroy();
         playback = null;
         playbackState = null;
@@ -999,6 +1140,7 @@
         lastPlaybackTerrainExaggeration = null;
         stopPlaybackRecording();
         playbackReady = false;
+        playbackPanelOpen = false;
         playbackTrailId = null;
         playbackRouteGeometry = null;
         revokePlaybackMediaBlobCache();
@@ -1006,6 +1148,9 @@
         applyMapTerrain();
         removePlaybackMarker();
         removePlaybackLayerArtifacts();
+        if (wasActive) {
+            resetPlaybackCamera();
+        }
     }
 
     function syncRoutePlayback() {
@@ -1025,6 +1170,10 @@
 
         if (playbackTrailId === id && playback) {
             playbackReady = true;
+            if (!playbackPanelOpen) {
+                playbackPanelOpen = true;
+                void tick().then(() => map?.resize());
+            }
             return;
         }
 
@@ -1052,22 +1201,34 @@
         });
         enablePlayback3d = isPlayback3dAllowed();
         playback.seek(0);
+        // Show playback controls by default once a trail is ready.
+        if (!playbackPanelOpen) {
+            playbackPanelOpen = true;
+            void tick().then(() => map?.resize());
+        }
     }
 
-    function togglePlayback() {
-        if (!playback) {
+    async function togglePlayback() {
+        if (!playback || playbackWarmingTiles) {
             return;
         }
-        const state = playback.getState();
-        if (state?.status === "playing") {
+        if (playbackDesirePlaying) {
+            playbackDesirePlaying = false;
+            playbackPausedForTiles = false;
             playback.pause();
             resetPlaybackCamera();
             return;
         }
+        const state = playback.getState();
         if ((state?.progress ?? 0) >= 1) {
             playback.seek(0);
         }
+        playbackDesirePlaying = true;
         applyMapTerrain(true, "playing");
+        await prewarmPlaybackRouteTiles();
+        if (!playbackDesirePlaying || !playback) {
+            return;
+        }
         playback.play();
         if (!followPlaybackCamera && map) {
             map.easeTo({
@@ -1083,7 +1244,7 @@
     }
 
     function addPlaybackToggleControl() {
-        if (!map || !enableRoutePlayback) {
+        if (!map || playbackToggleContainer) {
             return;
         }
         map.addControl({
@@ -1110,13 +1271,74 @@
         });
     }
 
-    function pickPlaybackRecordingMimeType() {
-        const types = [
+    function playbackRecordingMimeCandidates(format: "mp4" | "webm") {
+        if (format === "mp4") {
+            return [
+                "video/mp4;codecs=avc1.640028",
+                "video/mp4;codecs=avc1.4d0028",
+                "video/mp4;codecs=avc1.42E01E",
+                "video/mp4;codecs=avc1",
+                "video/mp4",
+            ];
+        }
+        return [
             "video/webm;codecs=vp9",
             "video/webm;codecs=vp8",
             "video/webm",
         ];
-        return types.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+    }
+
+    function isPlaybackRecordingMimeSupported(mimeType: string) {
+        return (
+            typeof MediaRecorder !== "undefined" &&
+            MediaRecorder.isTypeSupported(mimeType)
+        );
+    }
+
+    function pickPlaybackRecordingMimeType(
+        format: "mp4" | "webm" = playbackRecordFileFormat,
+    ) {
+        const preferred = playbackRecordingMimeCandidates(format).find(
+            isPlaybackRecordingMimeSupported,
+        );
+        if (preferred) {
+            return preferred;
+        }
+        const fallbackFormat = format === "mp4" ? "webm" : "mp4";
+        return (
+            playbackRecordingMimeCandidates(fallbackFormat).find(
+                isPlaybackRecordingMimeSupported,
+            ) ?? ""
+        );
+    }
+
+    function playbackRecordingExtension(mimeType: string) {
+        return mimeType.includes("mp4") ? "mp4" : "webm";
+    }
+
+    function refreshPlaybackRecordingFormats() {
+        playbackRecordMp4Supported = playbackRecordingMimeCandidates("mp4").some(
+            isPlaybackRecordingMimeSupported,
+        );
+        playbackRecordWebmSupported = playbackRecordingMimeCandidates("webm").some(
+            isPlaybackRecordingMimeSupported,
+        );
+        if (
+            playbackRecordFileFormat === "mp4" &&
+            !playbackRecordMp4Supported &&
+            playbackRecordWebmSupported
+        ) {
+            playbackRecordFileFormat = "webm";
+        } else if (
+            playbackRecordFileFormat === "webm" &&
+            !playbackRecordWebmSupported &&
+            playbackRecordMp4Supported
+        ) {
+            playbackRecordFileFormat = "mp4";
+        } else if (playbackRecordMp4Supported) {
+            // Prefer MP4 when available: better Instant Apps / social / phone support.
+            playbackRecordFileFormat = "mp4";
+        }
     }
 
     function overlayRect(
@@ -1124,21 +1346,57 @@
         mapRect: DOMRect,
         scaleX: number,
         scaleY: number,
+        cropX = 0,
+        cropY = 0,
     ) {
         const rect = element.getBoundingClientRect();
         return {
-            x: (rect.left - mapRect.left) * scaleX,
-            y: (rect.top - mapRect.top) * scaleY,
+            x: (rect.left - mapRect.left - cropX) * scaleX,
+            y: (rect.top - mapRect.top - cropY) * scaleY,
             width: rect.width * scaleX,
             height: rect.height * scaleY,
         };
     }
 
+    function pickPlaybackRecordSize(orientation: "landscape" | "portrait" = playbackRecordOrientation) {
+        return orientation === "portrait"
+            ? playbackRecordPortrait
+            : playbackRecordLandscape;
+    }
+
+    function playbackRecordBitrate(size: { width: number; height: number }) {
+        // ~0.1 bit per pixel per frame @ 30fps ≈ solid 1080p/vertical web export.
+        const pixels = size.width * size.height;
+        return Math.max(12_000_000, Math.round(pixels * 0.12));
+    }
+
+    function centerCropRect(
+        sourceWidth: number,
+        sourceHeight: number,
+        targetAspect: number,
+    ) {
+        const sourceAspect = sourceWidth / Math.max(1, sourceHeight);
+        if (sourceAspect > targetAspect) {
+            const width = sourceHeight * targetAspect;
+            return {
+                x: (sourceWidth - width) / 2,
+                y: 0,
+                width,
+                height: sourceHeight,
+            };
+        }
+        const height = sourceWidth / targetAspect;
+        return {
+            x: 0,
+            y: (sourceHeight - height) / 2,
+            width: sourceWidth,
+            height,
+        };
+    }
+
     function drawPlaybackElevationOverlay(
         ctx: CanvasRenderingContext2D,
-        mapRect: DOMRect,
-        scaleX: number,
-        scaleY: number,
+        dest: { x: number; y: number; width: number; height: number },
     ) {
         if (!epc?.isProfileShown) {
             return;
@@ -1148,31 +1406,68 @@
             return;
         }
 
-        const box = overlayRect(container, mapRect, scaleX, scaleY);
         const background = getComputedStyle(container).backgroundColor;
         ctx.save();
         ctx.globalAlpha = 0.94;
         ctx.fillStyle = background && background !== "rgba(0, 0, 0, 0)"
             ? background
             : "rgba(25, 27, 36, 0.92)";
-        ctx.fillRect(box.x, box.y, box.width, box.height);
+        ctx.fillRect(dest.x, dest.y, dest.width, dest.height);
         ctx.restore();
 
-        const canvases = container.querySelectorAll("canvas");
-        for (const canvas of canvases) {
-            const rect = overlayRect(canvas, mapRect, scaleX, scaleY);
-            ctx.drawImage(canvas, rect.x, rect.y, rect.width, rect.height);
+        const canvases = [...container.querySelectorAll("canvas")];
+        const media = [
+            ...container.querySelectorAll("img, video"),
+        ] as Array<HTMLImageElement | HTMLVideoElement>;
+        const layers = [
+            ...canvases.map((canvas) => ({
+                node: canvas as CanvasImageSource,
+                rect: canvas.getBoundingClientRect(),
+            })),
+            ...media.map((node) => ({
+                node,
+                rect: node.getBoundingClientRect(),
+            })),
+        ].filter((layer) => layer.rect.width > 0 && layer.rect.height > 0);
+
+        if (!layers.length) {
+            return;
         }
 
-        const media = container.querySelectorAll("img, video");
-        for (const node of media) {
-            const rect = overlayRect(node, mapRect, scaleX, scaleY);
+        const bounds = layers.reduce(
+            (acc, layer) => ({
+                left: Math.min(acc.left, layer.rect.left),
+                top: Math.min(acc.top, layer.rect.top),
+                right: Math.max(acc.right, layer.rect.right),
+                bottom: Math.max(acc.bottom, layer.rect.bottom),
+            }),
+            {
+                left: Number.POSITIVE_INFINITY,
+                top: Number.POSITIVE_INFINITY,
+                right: Number.NEGATIVE_INFINITY,
+                bottom: Number.NEGATIVE_INFINITY,
+            },
+        );
+        const sourceWidth = Math.max(1, bounds.right - bounds.left);
+        const sourceHeight = Math.max(1, bounds.bottom - bounds.top);
+        const scale = Math.min(
+            dest.width / sourceWidth,
+            dest.height / sourceHeight,
+        );
+        const drawWidth = sourceWidth * scale;
+        const drawHeight = sourceHeight * scale;
+        const offsetX = dest.x + (dest.width - drawWidth) / 2;
+        const offsetY = dest.y + (dest.height - drawHeight) / 2;
+
+        for (const layer of layers) {
+            const x = offsetX + (layer.rect.left - bounds.left) * scale;
+            const y = offsetY + (layer.rect.top - bounds.top) * scale;
             ctx.drawImage(
-                node as HTMLImageElement | HTMLVideoElement,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
+                layer.node,
+                x,
+                y,
+                layer.rect.width * scale,
+                layer.rect.height * scale,
             );
         }
     }
@@ -1232,71 +1527,143 @@
     function drawPlaybackPhotos(
         ctx: CanvasRenderingContext2D,
         photoRoot: HTMLElement,
-        mapRect: DOMRect,
-        scaleX: number,
-        scaleY: number,
+        dest: { x: number; y: number; width: number; height: number },
     ) {
-        const rootRect = overlayRect(photoRoot, mapRect, scaleX, scaleY);
-        const radius = 12 * Math.min(scaleX, scaleY);
+        const scale = Math.min(dest.width, dest.height) / 240;
+        const radius = Math.max(8, 12 * scale);
         const frames = photoRoot.querySelectorAll<HTMLImageElement | HTMLVideoElement>(
             ".playback-waypoint-media-frame",
         );
+        let drewFrame = false;
+        let activeAlpha = 0;
         for (const frame of frames) {
             const alpha = Number(getComputedStyle(frame).opacity);
             if (!Number.isFinite(alpha) || alpha <= 0.01) {
                 continue;
             }
-            const rect = overlayRect(frame, mapRect, scaleX, scaleY);
+            drewFrame = true;
+            activeAlpha = Math.max(activeAlpha, alpha);
             ctx.save();
+            ctx.globalAlpha = alpha;
             ctx.shadowColor = `rgba(0, 0, 0, ${0.35 * alpha})`;
-            ctx.shadowBlur = 18 * Math.min(scaleX, scaleY);
-            ctx.shadowOffsetY = 8 * Math.min(scaleY, scaleX);
-            roundedRectPath(ctx, rect.x, rect.y, rect.width, rect.height, radius);
+            ctx.shadowBlur = 18 * scale;
+            ctx.shadowOffsetY = 8 * scale;
+            roundedRectPath(ctx, dest.x, dest.y, dest.width, dest.height, radius);
             ctx.fillStyle = "#111827";
             ctx.fill();
             ctx.restore();
             drawCoverMedia(
                 ctx,
                 frame,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
+                dest.x,
+                dest.y,
+                dest.width,
+                dest.height,
                 radius,
                 alpha,
             );
         }
+        if (!drewFrame) {
+            return;
+        }
 
         const caption = photoRoot.querySelector(".playback-waypoint-media-caption") as HTMLElement | null;
-        if (caption?.textContent && Number(getComputedStyle(caption).opacity) > 0.01) {
-            const rect = overlayRect(caption, mapRect, scaleX, scaleY);
+        if (caption?.textContent && activeAlpha > 0.01) {
+            const captionHeight = Math.max(28, dest.height * 0.18);
+            const rect = {
+                x: dest.x,
+                y: dest.y + dest.height - captionHeight,
+                width: dest.width,
+                height: captionHeight,
+            };
+            const captionOpacity =
+                (Number(getComputedStyle(caption).opacity) || 1) * activeAlpha;
             ctx.save();
-            roundedRectPath(ctx, rootRect.x, rootRect.y, rootRect.width, rootRect.height, radius);
+            roundedRectPath(ctx, dest.x, dest.y, dest.width, dest.height, radius);
             ctx.clip();
-            ctx.globalAlpha = Number(getComputedStyle(caption).opacity) || 1;
+            ctx.globalAlpha = captionOpacity;
             ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
             ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
             ctx.fillStyle = "#ffffff";
-            ctx.font = `${Math.max(12, 14 * Math.min(scaleX, scaleY))}px sans-serif`;
+            ctx.font = `${Math.max(12, 14 * scale)}px sans-serif`;
             ctx.textBaseline = "middle";
             ctx.fillText(
                 caption.textContent.trim(),
-                rect.x + 12 * scaleX,
+                rect.x + 12 * scale,
                 rect.y + rect.height / 2,
-                rect.width - 24 * scaleX,
+                rect.width - 24 * scale,
             );
             ctx.restore();
         }
     }
 
-    function drawPlaybackHikerMarker(
+    function resolvePlaybackHikerGlyph(icon: Element | null): string | null {
+        if (!icon) {
+            return "\uf6ec";
+        }
+        const faVar = getComputedStyle(icon).getPropertyValue("--fa").trim();
+        const fromVar = decodeCssStringValue(faVar);
+        if (fromVar) {
+            return fromVar;
+        }
+        const before = getComputedStyle(icon, "::before");
+        const fromBefore = decodeCssStringValue(before.content);
+        if (fromBefore) {
+            return fromBefore;
+        }
+        // person-hiking in Font Awesome 6 Free Solid
+        return "\uf6ec";
+    }
+
+    function decodeCssStringValue(raw: string | null | undefined): string | null {
+        if (!raw || raw === "none" || raw === "normal") {
+            return null;
+        }
+        // Unresolved var() / alt-text forms from FA6 (`content: var(--fa)/""`).
+        if (raw.includes("var(") || raw.includes("/")) {
+            return null;
+        }
+        let value = raw.trim();
+        if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+        ) {
+            value = value.slice(1, -1);
+        }
+        const escapeMatch = value.match(/^\\([0-9a-fA-F]{1,6})$/);
+        if (escapeMatch) {
+            return String.fromCodePoint(parseInt(escapeMatch[1], 16));
+        }
+        // Reject ASCII leftovers like "person-hiking" when ligatures/fonts fail.
+        if (!value || (value.length > 2 && /^[\x20-\x7e]+$/.test(value))) {
+            return null;
+        }
+        return value;
+    }
+
+    function drawFontawesomeMapMarker(
         ctx: CanvasRenderingContext2D,
         markerEl: HTMLElement,
         rect: { x: number; y: number; width: number; height: number },
+        fallback: "pin" | "hiker" = "pin",
     ) {
+        if (rect.width < 2 || rect.height < 2) {
+            return;
+        }
+        if (
+            rect.x + rect.width < 0 ||
+            rect.y + rect.height < 0 ||
+            rect.x > ctx.canvas.width ||
+            rect.y > ctx.canvas.height
+        ) {
+            return;
+        }
         const style = getComputedStyle(markerEl);
         const alpha = Number(style.opacity);
         if (!Number.isFinite(alpha) || alpha <= 0.01) {
+            return;
+        }
+        if (style.visibility === "hidden" || style.display === "none") {
             return;
         }
         const cx = rect.x + rect.width / 2;
@@ -1304,30 +1671,75 @@
         const size = Math.max(rect.width, rect.height);
         const icon = markerEl.querySelector("i");
         const iconStyle = icon ? getComputedStyle(icon) : null;
-        const before = icon ? getComputedStyle(icon, "::before") : null;
-        const glyphRaw = before?.content && before.content !== "none" ? before.content : '"\uf6ec"';
-        const glyph = glyphRaw.replace(/^["']|["']$/g, "") || "\uf6ec";
+        const glyph = resolvePlaybackHikerGlyph(icon);
 
         ctx.save();
         ctx.globalAlpha = alpha;
         ctx.beginPath();
         ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
-        ctx.fillStyle = style.backgroundColor || "#3549bb";
+        ctx.fillStyle =
+            style.backgroundColor && style.backgroundColor !== "rgba(0, 0, 0, 0)"
+                ? style.backgroundColor
+                : fallback === "hiker"
+                  ? "#3549bb"
+                  : "#6b7280";
         ctx.fill();
         ctx.lineWidth = Math.max(1.5, size * 0.08);
         ctx.strokeStyle = "rgba(255,255,255,0.95)";
         ctx.stroke();
-        ctx.fillStyle = iconStyle?.color || "#ffffff";
-        ctx.font = `${before?.fontWeight || iconStyle?.fontWeight || 900} ${Math.round(size * 0.52)}px ${
-            before?.fontFamily || iconStyle?.fontFamily || '"Font Awesome 6 Free"'
-        }`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(glyph, cx, cy + size * 0.03);
-        if (ctx.measureText(glyph).width < 2) {
-            drawHikerFallback(ctx, cx, cy, size);
+
+        let drewGlyph = false;
+        if (glyph) {
+            const family = iconStyle?.fontFamily || '"Font Awesome 6 Free"';
+            const weight = iconStyle?.fontWeight || "900";
+            ctx.fillStyle = iconStyle?.color || "#ffffff";
+            ctx.font = `${weight} ${Math.round(size * 0.52)}px ${family}`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(glyph, cx, cy + size * 0.03);
+            drewGlyph = ctx.measureText(glyph).width >= 2;
+        }
+        if (!drewGlyph) {
+            if (fallback === "hiker") {
+                drawHikerFallback(ctx, cx, cy, size);
+            } else {
+                ctx.beginPath();
+                ctx.arc(cx, cy - size * 0.08, size * 0.12, 0, Math.PI * 2);
+                ctx.fillStyle = "#ffffff";
+                ctx.fill();
+            }
         }
         ctx.restore();
+    }
+
+    function collectRecordingMapMarkers(): Array<{
+        el: HTMLElement;
+        fallback: "pin" | "hiker";
+    }> {
+        const items: Array<{ el: HTMLElement; fallback: "pin" | "hiker" }> = [];
+        const trailId = activeTrail !== null ? trails[activeTrail]?.id : null;
+        const layer = trailId ? layerManager?.layers[trailId] : undefined;
+        const trailMarkers =
+            layer && "markers" in layer
+                ? (layer.markers as { start?: M.Marker; end?: M.Marker } | undefined)
+                : undefined;
+        if (trailMarkers?.start) {
+            items.push({ el: trailMarkers.start.getElement(), fallback: "pin" });
+        }
+        if (trailMarkers?.end) {
+            items.push({ el: trailMarkers.end.getElement(), fallback: "pin" });
+        }
+        for (const marker of markers) {
+            const el = marker.getElement();
+            if (
+                el &&
+                el.id !== "playback-marker" &&
+                el.id !== "elevation-marker"
+            ) {
+                items.push({ el, fallback: "pin" });
+            }
+        }
+        return items;
     }
 
     function drawHikerFallback(
@@ -1371,71 +1783,146 @@
             return;
         }
         map.triggerRepaint();
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.fillStyle = "#0b0d12";
         ctx.fillRect(0, 0, width, height);
 
         const mapCanvas = map.getCanvas();
-        const mapSource =
-            playbackMapVideo &&
-            playbackMapVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-            playbackMapVideo.videoWidth > 0
-                ? playbackMapVideo
-                : mapCanvas;
-        ctx.drawImage(mapSource, 0, 0, width, height);
-
+        // Draw the map canvas directly (no captureStream video) to avoid an extra
+        // lossy encode before MediaRecorder.
+        const mapSource = mapCanvas;
         const mapRect = mapCanvas.getBoundingClientRect();
-        const scaleX = width / Math.max(1, mapRect.width);
-        const scaleY = height / Math.max(1, mapRect.height);
+        const targetAspect = width / Math.max(1, height);
+        const cssCrop = centerCropRect(mapRect.width, mapRect.height, targetAspect);
+        const pxCrop = centerCropRect(mapCanvas.width, mapCanvas.height, targetAspect);
+        ctx.drawImage(
+            mapSource,
+            pxCrop.x,
+            pxCrop.y,
+            pxCrop.width,
+            pxCrop.height,
+            0,
+            0,
+            width,
+            height,
+        );
+
+        const scaleX = width / Math.max(1, cssCrop.width);
+        const scaleY = height / Math.max(1, cssCrop.height);
+
+        for (const item of collectRecordingMapMarkers()) {
+            drawFontawesomeMapMarker(
+                ctx,
+                item.el,
+                overlayRect(
+                    item.el,
+                    mapRect,
+                    scaleX,
+                    scaleY,
+                    cssCrop.x,
+                    cssCrop.y,
+                ),
+                item.fallback,
+            );
+        }
+
+        // Photos are pinned to the export frame (not screen coords) so center-crop
+        // never clips the waypoint media that sits at the map's top-right.
         const photoRoot = mapCanvas
             .closest("#map-wrapper")
             ?.querySelector(".playback-waypoint-media") as HTMLElement | null;
         if (photoRoot) {
-            drawPlaybackPhotos(ctx, photoRoot, mapRect, scaleX, scaleY);
+            const margin = Math.round(Math.min(width, height) * 0.02);
+            const photoWidth = Math.min(
+                Math.round(width * 0.28),
+                Math.round(height * 0.36),
+                420,
+            );
+            const photoHeight = Math.round(photoWidth * 0.75);
+            drawPlaybackPhotos(ctx, photoRoot, {
+                x: width - margin - photoWidth,
+                y: margin,
+                width: photoWidth,
+                height: photoHeight,
+            });
         }
 
         const markerEl = playbackMarker?.getElement();
         if (markerEl) {
-            drawPlaybackHikerMarker(
+            drawFontawesomeMapMarker(
                 ctx,
                 markerEl,
-                overlayRect(markerEl, mapRect, scaleX, scaleY),
+                overlayRect(
+                    markerEl,
+                    mapRect,
+                    scaleX,
+                    scaleY,
+                    cssCrop.x,
+                    cssCrop.y,
+                ),
+                "hiker",
             );
         }
 
-        drawPlaybackElevationOverlay(ctx, mapRect, scaleX, scaleY);
+        const profileHeight = elevationOverlayDestHeight(width, height);
+        drawPlaybackElevationOverlay(ctx, {
+            x: 0,
+            y: Math.round(height - profileHeight),
+            width,
+            height: profileHeight,
+        });
     }
 
-    function startPlaybackRecording() {
-        if (!map || playbackRecorder || !playbackCanRecord) {
+    function elevationOverlayDestHeight(frameWidth: number, frameHeight: number) {
+        // Fit the profile as a bottom strip: ~22% of frame height, capped so it
+        // stays readable in both 16:9 and 9:16 without eating the map.
+        const byRatio = Math.round(frameHeight * (frameHeight > frameWidth ? 0.22 : 0.26));
+        const byWidth = Math.round(frameWidth * 0.28);
+        return Math.max(140, Math.min(byRatio, byWidth, Math.round(frameHeight * 0.3)));
+    }
+
+    async function startPlaybackRecording() {
+        if (
+            !map ||
+            playbackRecorder ||
+            !playbackCanRecord ||
+            playbackWarmingTiles
+        ) {
             return;
         }
-        const mimeType = pickPlaybackRecordingMimeType();
+        const mimeType = pickPlaybackRecordingMimeType(playbackRecordFileFormat);
         if (!mimeType) {
             return;
         }
-        const mapCanvas = map.getCanvas();
-        const recordCanvas = document.createElement("canvas");
-        recordCanvas.width = mapCanvas.width;
-        recordCanvas.height = mapCanvas.height;
-        const ctx = recordCanvas.getContext("2d", { alpha: false });
-        if (!ctx) {
+
+        playbackDesirePlaying = true;
+        applyMapTerrain(true, "playing");
+        await prewarmPlaybackRouteTiles();
+        if (!playbackDesirePlaying || !map || playbackRecorder) {
             return;
         }
 
-        const mapStream = mapCanvas.captureStream(30);
-        playbackMapVideo = document.createElement("video");
-        playbackMapVideo.muted = true;
-        playbackMapVideo.playsInline = true;
-        playbackMapVideo.autoplay = true;
-        playbackMapVideo.srcObject = mapStream;
-        void playbackMapVideo.play();
+        const size = pickPlaybackRecordSize(playbackRecordOrientation);
+        playbackRecordSize = size;
+        const recordCanvas = document.createElement("canvas");
+        recordCanvas.width = size.width;
+        recordCanvas.height = size.height;
+        const ctx = recordCanvas.getContext("2d", {
+            alpha: false,
+        });
+        if (!ctx) {
+            playbackRecordSize = null;
+            return;
+        }
 
         playbackRecordMimeType = mimeType;
         playbackRecordChunks = [];
         const stream = recordCanvas.captureStream(30);
+        const bitrate = playbackRecordBitrate(size);
         playbackRecorder = new MediaRecorder(stream, {
             mimeType,
-            videoBitsPerSecond: 6_000_000,
+            videoBitsPerSecond: bitrate,
         });
         playbackRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
@@ -1443,7 +1930,8 @@
             }
         };
         playbackRecorder.onstop = () => {
-            cleanupPlaybackMapCapture();
+            const exported = playbackRecordSize;
+            playbackRecordSize = null;
             const blob = new Blob(playbackRecordChunks, { type: playbackRecordMimeType });
             playbackRecordChunks = [];
             playbackRecorder = null;
@@ -1455,14 +1943,17 @@
             const link = document.createElement("a");
             const trailName = trails[activeTrail ?? 0]?.name ?? "trail";
             const safeName = trailName.replace(/[^\w\-]+/g, "_").slice(0, 40);
+            const sizeLabel = exported
+                ? `${exported.width}x${exported.height}`
+                : "video";
             link.href = url;
-            link.download = `wanderer-${safeName}-${Date.now()}.webm`;
+            link.download = `wanderer-${safeName}-${sizeLabel}-${Date.now()}.${playbackRecordingExtension(playbackRecordMimeType)}`;
             link.click();
             window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
         };
-        playbackRecorder.start(250);
+        playbackRecorder.start(1000);
         playbackRecording = true;
-        void document.fonts?.load?.('900 24px "Font Awesome 6 Free"');
+        void document.fonts?.load?.('900 24px "Font Awesome 6 Free"').catch(() => {});
 
         if (showElevation && epc && !epc.isProfileShown) {
             epc.showProfile();
@@ -1471,16 +1962,16 @@
         }
 
         const draw = () => {
-            if (!playbackRecording || !playbackRecorder) {
+            if (!playbackRecording || !playbackRecorder || !playbackRecordSize) {
                 return;
             }
             try {
                 if (
-                    recordCanvas.width !== mapCanvas.width ||
-                    recordCanvas.height !== mapCanvas.height
+                    recordCanvas.width !== playbackRecordSize.width ||
+                    recordCanvas.height !== playbackRecordSize.height
                 ) {
-                    recordCanvas.width = mapCanvas.width;
-                    recordCanvas.height = mapCanvas.height;
+                    recordCanvas.width = playbackRecordSize.width;
+                    recordCanvas.height = playbackRecordSize.height;
                 }
                 drawPlaybackRecordingFrame(
                     ctx,
@@ -1508,25 +1999,11 @@
         }
     }
 
-    function cleanupPlaybackMapCapture() {
-        if (playbackMapVideo) {
-            const stream = playbackMapVideo.srcObject;
-            if (stream instanceof MediaStream) {
-                for (const track of stream.getTracks()) {
-                    track.stop();
-                }
-            }
-            playbackMapVideo.srcObject = null;
-            playbackMapVideo = null;
-        }
-    }
-
     function stopPlaybackRecording() {
         if (playbackRecordFrameId) {
             cancelAnimationFrame(playbackRecordFrameId);
             playbackRecordFrameId = 0;
         }
-        cleanupPlaybackMapCapture();
         if (playbackRestoreElevationAfterRecord) {
             playbackRestoreElevationAfterRecord = false;
             epc?.hideProfile();
@@ -1535,16 +2012,23 @@
             playbackRecorder.stop();
             return;
         }
+        playbackRecordSize = null;
         playbackRecorder = null;
         playbackRecording = false;
     }
 
-    function togglePlaybackRecording() {
-        if (playbackRecording) {
-            stopPlaybackRecording();
+    async function togglePlaybackRecording() {
+        if (playbackWarmingTiles) {
             return;
         }
-        startPlaybackRecording();
+        if (playbackRecording) {
+            playbackDesirePlaying = false;
+            playbackPausedForTiles = false;
+            stopPlaybackRecording();
+            playback?.pause();
+            return;
+        }
+        await startPlaybackRecording();
     }
 
     function handlePlaybackProgressChange(progress: number) {
@@ -2262,6 +2746,7 @@
 
     onMount(async () => {
         document.addEventListener(WAYPOINT_FOCUS_EVENT, handleWaypointFocus);
+        refreshPlaybackRecordingFormats();
         playbackCanRecord =
             typeof MediaRecorder !== "undefined" &&
             Boolean(pickPlaybackRecordingMimeType());
@@ -2290,6 +2775,8 @@
                 center: [initialState.lng, initialState.lat],
                 zoom: initialState.zoom,
                 maxPitch: 70,
+                maxTileCacheSize: 750,
+                maxTileCacheZoomLevels: 12,
             },
             ...mapOptions,
             preserveDrawingBuffer: true,
@@ -2414,6 +2901,7 @@
         }
 
         map.on("styledata", (e) => {
+            playbackTilesPrewarmedFor = null;
             if (showTerrain && page.data.settings?.terrain?.terrain) {
                 const hadTerrainSource = Boolean(map?.getSource("terrain"));
                 layerManager.addLayer(
@@ -2586,7 +3074,7 @@
     </div>
     <RoutePlaybackControl
         visible={playbackReady && playbackPanelOpen}
-        playing={playbackState?.status === "playing"}
+        playing={playbackDesirePlaying}
         progress={playbackState?.progress ?? 0}
         mode={playbackState?.mode ?? "constant"}
         photoDurationMs={playbackMediaDisplayMs}
@@ -2595,12 +3083,23 @@
         allow3d={isPlayback3dAllowed()}
         recording={playbackRecording}
         canRecord={playbackCanRecord}
+        warmingTiles={playbackWarmingTiles}
+        recordOrientation={playbackRecordOrientation}
+        recordFileFormat={playbackRecordFileFormat}
+        recordMp4Supported={playbackRecordMp4Supported}
+        recordWebmSupported={playbackRecordWebmSupported}
         distanceLabel={`${formatDistance(playbackState?.distance)} / ${formatDistance(playbackState?.totalDistance)}`}
         durationLabel={formatTimeHHMM((playbackState?.durationMs ?? 0) / 1000)}
         onplaypause={togglePlayback}
         onprogresschange={handlePlaybackProgressChange}
         onphotodurationchange={handlePlaybackPhotoDurationChange}
         onfollowcamerachange={(enabled) => (followPlaybackCamera = enabled)}
+        onrecordorientationchange={(orientation) => {
+            playbackRecordOrientation = orientation;
+        }}
+        onrecordfileformatchange={(format) => {
+            playbackRecordFileFormat = format;
+        }}
         onenable3dchange={(enabled) => {
             enablePlayback3d = enabled;
             lastPlaybackTerrainExaggeration = null;
@@ -2650,9 +3149,8 @@
         z-index: 24;
         overflow: hidden;
         pointer-events: none;
-        background: #111827;
+        background: transparent;
         border-radius: 0.75rem;
-        box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.2);
     }
 
     .playback-waypoint-media-frame {
@@ -2664,7 +3162,8 @@
         object-position: center;
         opacity: 0;
         border-radius: 0.75rem;
-        box-shadow: none;
+        background: #111827;
+        box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.2);
     }
 
     .playback-waypoint-media-frame.is-ready {
