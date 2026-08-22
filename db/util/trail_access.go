@@ -9,11 +9,24 @@ import (
 // routes that load a trail server-side and therefore bypass PocketBase's normal
 // collection API permission checks.
 func TrailViewableByUser(app core.App, trail *core.Record, userID string, shareToken string) bool {
-	if trail == nil || userID == "" {
+	if trail == nil {
 		return false
 	}
 	if trail.GetBool("public") {
 		return true
+	}
+
+	// Trails published via a public list are readable by anyone who can see the list.
+	if list, err := app.FindFirstRecordByFilter(
+		"lists",
+		"public = true && trails ?= {:trail}",
+		dbx.Params{"trail": trail.Id},
+	); err == nil && list != nil {
+		return true
+	}
+
+	if userID == "" {
+		return false
 	}
 
 	actor, err := app.FindFirstRecordByData("activitypub_actors", "user", userID)
