@@ -23,7 +23,12 @@
         lists_delete,
         lists_search_filter,
     } from "$lib/stores/list_store";
-    import { trails_get_bounding_box, trails_show } from "$lib/stores/trail_store";
+    import {
+        fetchGPX,
+        trails_get_bounding_box,
+        trails_show,
+    } from "$lib/stores/trail_store";
+    import { APIError } from "$lib/util/api_util";
     import { currentUser } from "$lib/stores/user_store";
     import { handleFromRecordWithIRI } from "$lib/util/activitypub_util.js";
     import * as M from "maplibre-gl";
@@ -234,6 +239,12 @@
             pagination.totalPages = response.totalPages;
         }
         loading = false;
+
+        const onHashChange = () => {
+            void applyTrailHash(location.hash.replace(/^#/, ""), selectedList);
+        };
+        window.addEventListener("hashchange", onHashChange);
+        return () => window.removeEventListener("hashchange", onHashChange);
     });
 
     async function applyTrailHash(hash: string, list: List | null) {
@@ -253,14 +264,37 @@
         }
         applyingTrailHash = true;
         try {
-            selectedTrail = await trails_show(
-                trail.iri
-                    ? trail.iri.substring(trail.iri.length - 15)
-                    : trail.id!,
-                handleFromRecordWithIRI(trail),
-                undefined,
-                true,
-            );
+            try {
+                selectedTrail = await trails_show(
+                    trail.iri
+                        ? trail.iri.substring(trail.iri.length - 15)
+                        : trail.id!,
+                    handleFromRecordWithIRI(trail),
+                    undefined,
+                    true,
+                );
+            } catch (e) {
+                // Private trails on a public list are visible in list expand /
+                // files, but trails_show can still 403 until view rules catch up.
+                if (!(e instanceof APIError) || e.status !== 403) {
+                    throw e;
+                }
+                const fallback: Trail = {
+                    ...trail,
+                    expand: {
+                        ...(trail.expand ?? {}),
+                        waypoints_via_trail:
+                            trail.expand?.waypoints_via_trail ?? [],
+                        summit_logs_via_trail:
+                            trail.expand?.summit_logs_via_trail ?? [],
+                    },
+                };
+                const gpxData = await fetchGPX(fallback);
+                if (gpxData) {
+                    fallback.expand!.gpx_data = gpxData;
+                }
+                selectedTrail = fallback;
+            }
             mapWithElevation?.unHighlightTrail(trail.id!);
         } finally {
             applyingTrailHash = false;
@@ -310,6 +344,8 @@
             noScroll: true,
             keepFocus: true,
         });
+        // Same-path hash-only goto often does not update page.url; open trail explicitly.
+        await applyTrailHash(trail.id!, selectedList);
         window.scrollTo({ top: 0 });
     }
 
@@ -563,6 +599,7 @@
             }}
             showInfoPopup={true}
             showTerrain={true}
+            enableRoutePlayback={Boolean(selectedTrail)}
         ></MapWithElevationMaplibre>
     </div>
 
