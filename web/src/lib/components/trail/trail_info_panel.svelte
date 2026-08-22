@@ -640,8 +640,8 @@
                             <h4
                                 title={trail.name}
                                 class="{mode == 'map'
-                                    ? 'text-4xl'
-                                    : 'text-5xl'} font-bold line-clamp-3 mb-1 wrap-anywhere"
+                                    ? 'text-3xl'
+                                    : 'text-3xl sm:text-4xl'} font-bold mb-1 wrap-anywhere break-words"
                                 style="line-height: 1.18"
                             >
                                 {trail.name}
