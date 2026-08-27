@@ -35,7 +35,7 @@
     import type { PreviewListBounds } from "$lib/util/list_map_preview_util";
     import * as M from "maplibre-gl";
 
-    import { onMount, untrack } from "svelte";
+    import { onMount, tick, untrack } from "svelte";
     import { _ } from "svelte-i18n";
     import { slide } from "svelte/transition";
 
@@ -112,6 +112,23 @@
             return "/lists";
         }
         return listHref(selectedList);
+    }
+
+    function isMobileViewport() {
+        return browser && window.innerWidth < 768;
+    }
+
+    async function focusMobileTrailMap() {
+        if (!isMobileViewport()) {
+            return;
+        }
+        await tick();
+        document.getElementById("trail-map")?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+        });
+        map?.resize();
+        mapWithElevation?.fitToBounds();
     }
 
     $effect(() => {
@@ -338,6 +355,7 @@
                 selectedTrail = fallback;
             }
             mapWithElevation?.unHighlightTrail(trail.id!);
+            await focusMobileTrailMap();
         } finally {
             applyingTrailHash = false;
         }
@@ -388,7 +406,9 @@
         });
         // Same-path hash-only goto often does not update page.url; open trail explicitly.
         await applyTrailHash(trail.id!, selectedList);
-        window.scrollTo({ top: 0 });
+        if (!isMobileViewport()) {
+            window.scrollTo({ top: 0 });
+        }
     }
 
     function highlightTrail(trail: Trail) {
@@ -481,7 +501,9 @@
 </svelte:head>
 <main class="grid grid-cols-1 md:grid-cols-[430px_1fr] gap-4 lg:gap-4 md:mx-4">
     <div
-        class="list-list relative md:mx-auto rounded-xl border border-input-border max-h-full w-full order-1 md:order-none"
+        class="list-list relative md:mx-auto rounded-xl border border-input-border max-h-full w-full order-1 md:order-none {selectedTrail
+            ? 'order-last max-md:max-h-[50vh]'
+            : ''}"
     >
         <div
             class="flex gap-x-3 items-center px-3 py-4 bg-background z-50 rounded-xl"
@@ -614,7 +636,10 @@
             {/if}
         </div>
     </div>
-    <div id="trail-map">
+    <div
+        id="trail-map"
+        class={selectedTrail ? "order-first md:order-none" : ""}
+    >
         <MapWithElevationMaplibre
             trails={mapTrails}
             waypoints={selectedTrailWaypoints}
@@ -659,6 +684,11 @@
 </main>
 
 <style>
+    #trail-map {
+        height: calc(100vh - 180px);
+        min-height: 320px;
+    }
+
     @media only screen and (min-width: 768px) {
         #trail-map {
             height: calc(100vh - 124px);
