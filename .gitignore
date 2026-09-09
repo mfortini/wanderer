@@ -1,6 +1,11 @@
 .DS_Store
 .vscode/
 
+# Secrets and local env (keep .env.example)
+.env
+.env.*
+!.env.example
+
 db/pocketbase*
 
 search/meilisearch*
