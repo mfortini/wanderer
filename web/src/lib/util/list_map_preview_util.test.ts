@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     applyPolylineBudget,
     meiliIdInFilter,
+    meiliIriInFilter,
     unionTrailBounds,
 } from "./list_map_preview_util";
 
@@ -65,6 +66,14 @@ describe("meiliIdInFilter", () => {
     it("builds an id IN filter", () => {
         expect(meiliIdInFilter(["abc", "d'ef"])).toBe(
             "id IN ['abc','d\\'ef']",
+        );
+    });
+});
+
+describe("meiliIriInFilter", () => {
+    it("builds an iri IN filter", () => {
+        expect(meiliIriInFilter(["https://ex/a", "https://ex/b'c"])).toBe(
+            "iri IN ['https://ex/a','https://ex/b\\'c']",
         );
     });
 });

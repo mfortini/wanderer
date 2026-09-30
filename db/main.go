@@ -331,7 +331,7 @@ func initMeilisearchConfig(client meilisearch.ServiceManager) {
 			FilterableAttributes: []string{
 				"id", "_geo", "author", "category_id", "subcategory_id",
 				"is_federated", "completed", "date", "difficulty", "distance",
-				"elevation_gain", "elevation_loss", "likes", "public", "shares",
+				"elevation_gain", "elevation_loss", "iri", "likes", "public", "shares",
 				"tags", "min_lat", "max_lat", "min_lon", "max_lon", "bounding_box_diagonal",
 			},
 			SortableAttributes: []string{

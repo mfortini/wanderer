@@ -1,5 +1,6 @@
 export type PreviewTrailGeometry = {
     id: string;
+    iri?: string;
     polyline?: string;
     lat?: number;
     lon?: number;
@@ -83,4 +84,8 @@ export function applyPolylineBudget(
 
 export function meiliIdInFilter(ids: string[]): string {
     return `id IN [${ids.map((id) => `'${id.replaceAll("'", "\\'")}'`).join(",")}]`;
+}
+
+export function meiliIriInFilter(iris: string[]): string {
+    return `iri IN [${iris.map((iri) => `'${iri.replaceAll("'", "\\'")}'`).join(",")}]`;
 }
