@@ -28,7 +28,6 @@
     import { trails_get_bounding_box, trails_show } from "$lib/stores/trail_store";
     import { currentUser } from "$lib/stores/user_store";
     import { handleFromRecordWithIRI } from "$lib/util/activitypub_util.js";
-    import type { PreviewListBounds } from "$lib/util/list_map_preview_util";
     import * as M from "maplibre-gl";
 
     import { onMount, untrack } from "svelte";
@@ -76,6 +75,11 @@
     let overviewTrails: Trail[] = $state([]);
     let overviewPreviewKey = $state("");
     let overviewPreviewRequest = 0;
+    let overviewFitRequest = 0;
+    /** Real trail id -> list ids that contain it (for shared-route clicks). */
+    let overviewTrailListIds = $state(new Map<string, string[]>());
+    let sharedListChooser: { trailId: string; lists: List[] } | null =
+        $state(null);
 
     let selectedTrailIndex = $derived(selectedTrail ? 0 : null);
 
@@ -86,21 +90,42 @@
     let mapTrails = $derived(
         selectedTrail
             ? [selectedTrail]
-            : (selectedList?.expand?.trails ?? overviewTrails),
+            : selectedList
+              ? (selectedList.expand?.trails ?? [])
+              : overviewTrails,
     );
-
-    function applyBounds(trail: Trail, bounds?: PreviewListBounds) {
-        if (!bounds) {
-            return;
-        }
-        trail.min_lat = bounds.min_lat;
-        trail.max_lat = bounds.max_lat;
-        trail.min_lon = bounds.min_lon;
-        trail.max_lon = bounds.max_lon;
-    }
 
     function listIdFromOverviewTrail(trail: Trail) {
         return trail.id?.split("#")[0] ?? trail.id;
+    }
+
+    function openOverviewTrail(trail: Trail) {
+        const realTrailId = trail.id?.includes("#")
+            ? trail.id.split("#").slice(1).join("#")
+            : trail.id;
+        const listIds =
+            (realTrailId
+                ? overviewTrailListIds.get(realTrailId)
+                : undefined) ??
+            (listIdFromOverviewTrail(trail)
+                ? [listIdFromOverviewTrail(trail)!]
+                : []);
+        const matching = listIds
+            .map((id) => lists.find((item) => item.id === id))
+            .filter((item): item is List => !!item);
+
+        if (matching.length === 1) {
+            sharedListChooser = null;
+            setCurrentList(matching[0]);
+            return;
+        }
+        if (matching.length > 1) {
+            sharedListChooser = {
+                trailId: realTrailId ?? trail.id ?? "",
+                lists: matching,
+            };
+            return;
+        }
     }
 
     async function refreshOverviewPreview(sourceLists: List[]) {
@@ -116,6 +141,7 @@
 
         if (listIds.length === 0) {
             overviewTrails = [];
+            overviewTrailListIds = new Map();
             return;
         }
 
@@ -124,15 +150,21 @@
             if (request !== overviewPreviewRequest) {
                 return;
             }
-            const nextTrails: Trail[] = [];
+            const byTrailId = new Map<
+                string,
+                {
+                    geometry: (typeof preview.lists)[0]["trails"][0];
+                    listIds: string[];
+                    listName: string;
+                    author: string;
+                }
+            >();
 
             for (const listPreview of preview.lists) {
-                const list = sourceLists.find((item) => item.id === listPreview.id);
-                if (!list) {
-                    continue;
-                }
-
-                if (listPreview.trails.length === 0) {
+                const list = sourceLists.find(
+                    (item) => item.id === listPreview.id,
+                );
+                if (!list || listPreview.trails.length === 0) {
                     continue;
                 }
 
@@ -145,37 +177,68 @@
                         continue;
                     }
 
-                    const trail = new Trail(list.name, {
-                        id: `${list.id}#${geometry.id}`,
-                        lat: geometry.lat,
-                        lon: geometry.lon,
-                    });
-                    trail.polyline = geometry.polyline;
-                    trail.author = list.author;
-                    trail.min_lat = geometry.min_lat;
-                    trail.max_lat = geometry.max_lat;
-                    trail.min_lon = geometry.min_lon;
-                    trail.max_lon = geometry.max_lon;
-                    applyBounds(trail, listPreview.bounds);
-                    nextTrails.push(trail);
+                    const existing = byTrailId.get(geometry.id);
+                    if (existing) {
+                        if (!existing.listIds.includes(listPreview.id)) {
+                            existing.listIds.push(listPreview.id);
+                        }
+                    } else {
+                        byTrailId.set(geometry.id, {
+                            geometry,
+                            listIds: [listPreview.id],
+                            listName: list.name,
+                            author: list.author,
+                        });
+                    }
                 }
             }
 
+            const nextTrails: Trail[] = [];
+            const nextListIds = new Map<string, string[]>();
+
+            for (const [trailId, entry] of byTrailId) {
+                const { geometry, listIds: membership, listName, author } =
+                    entry;
+                // Keep first list id in the feature id for stable overview colouring.
+                const trail = new Trail(listName, {
+                    id: `${membership[0]}#${trailId}`,
+                    lat: geometry.lat,
+                    lon: geometry.lon,
+                });
+                trail.polyline = geometry.polyline;
+                trail.author = author;
+                trail.min_lat = geometry.min_lat;
+                trail.max_lat = geometry.max_lat;
+                trail.min_lon = geometry.min_lon;
+                trail.max_lon = geometry.max_lon;
+                nextTrails.push(trail);
+                nextListIds.set(trailId, membership);
+            }
+
+            overviewTrailListIds = nextListIds;
             overviewTrails = nextTrails;
         } catch {
             if (request === overviewPreviewRequest) {
                 overviewTrails = [];
+                overviewTrailListIds = new Map();
             }
         }
     }
 
     async function fitOverviewOrFallback() {
+        const request = ++overviewFitRequest;
         if (overviewTrails.length) {
             mapWithElevation?.fitToBounds();
             return;
         }
         try {
             const bbox = await trails_get_bounding_box();
+            if (request !== overviewFitRequest) {
+                return;
+            }
+            if (selectedList || selectedTrail || overviewTrails.length > 0) {
+                return;
+            }
             if (
                 bbox.has_trails ??
                 (bbox.min_lon != 0 ||
@@ -217,6 +280,7 @@
         if (!map) {
             return;
         }
+        const geometryKey = overviewTrails.map((trail) => trail.id).join(",");
         const key = [
             filter.q,
             filter.author ?? "",
@@ -225,7 +289,7 @@
             filter.sort ?? "",
             filter.sortOrder ?? "",
             overviewPreviewKey,
-            String(overviewTrails.length),
+            geometryKey,
         ].join("|");
         if (overviewTrails.length === 0 && loading) {
             return;
@@ -541,11 +605,7 @@
             fitBounds={selectedList || selectedTrail ? "animate" : "off"}
             clusterTrails={!selectedList && !selectedTrail}
             onUnclusteredClick={(_, trail) => {
-                const listId = listIdFromOverviewTrail(trail);
-                const list = lists.find((item) => item.id === listId);
-                if (list) {
-                    setCurrentList(list);
-                }
+                openOverviewTrail(trail);
             }}
             onselect={(trail) => {
                 if (selectedList && !selectedTrail) {
@@ -570,6 +630,55 @@
     {#if selectedList}
         <ListShareModal bind:this={listShareModal} list={selectedList}
         ></ListShareModal>
+    {/if}
+
+    {#if sharedListChooser}
+        <div
+            class="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shared-list-chooser-title"
+        >
+            <button
+                type="button"
+                class="absolute inset-0 cursor-default"
+                aria-label={$_("close")}
+                onclick={() => (sharedListChooser = null)}
+            ></button>
+            <div
+                class="relative z-10 w-full max-w-sm rounded-xl bg-background p-4 shadow-lg text-content"
+            >
+                <h2
+                    id="shared-list-chooser-title"
+                    class="mb-3 text-base font-semibold"
+                >
+                    {$_("select-list")}
+                </h2>
+                <ul class="flex flex-col gap-2">
+                    {#each sharedListChooser.lists as list (list.id)}
+                        <li>
+                            <button
+                                type="button"
+                                class="w-full rounded-xl border border-input-border px-3 py-2 text-left hover:bg-menu-item-background-hover"
+                                onclick={() => {
+                                    sharedListChooser = null;
+                                    setCurrentList(list);
+                                }}
+                            >
+                                {list.name}
+                            </button>
+                        </li>
+                    {/each}
+                </ul>
+                <button
+                    type="button"
+                    class="btn-secondary mt-3 w-full"
+                    onclick={() => (sharedListChooser = null)}
+                >
+                    {$_("cancel")}
+                </button>
+            </div>
+        </div>
     {/if}
 </main>
 

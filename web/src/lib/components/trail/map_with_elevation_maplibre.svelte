@@ -123,6 +123,23 @@
 
     let hoveringTrail: boolean = false;
 
+    /** Pointer position at mousedown; used to ignore drag-as-click. */
+    let pointerDownPoint: { x: number; y: number } | null = null;
+    const CLICK_MOVE_THRESHOLD_PX = 5;
+
+    function rememberPointerDown(e: M.MapMouseEvent) {
+        pointerDownPoint = { x: e.point.x, y: e.point.y };
+    }
+
+    function isClickNotDrag(e: M.MapMouseEvent) {
+        if (!pointerDownPoint) {
+            return true;
+        }
+        const dx = e.point.x - pointerDownPoint.x;
+        const dy = e.point.y - pointerDownPoint.y;
+        return Math.hypot(dx, dy) < CLICK_MOVE_THRESHOLD_PX;
+    }
+
     let mapLoaded: boolean = $state(false);
     let terrainEnabled: boolean | null = null;
     let elevationProfileVisibilityPreference: boolean | null = null;
@@ -481,11 +498,6 @@
     }
 
     function getBounds() {
-        const fromTrails = getTrailRecordBounds();
-        if (fromTrails) {
-            return fromTrails;
-        }
-
         let minX = Infinity,
             minY = Infinity,
             maxX = -Infinity,
@@ -504,6 +516,15 @@
                 box[2],
                 box[3],
             );
+        }
+
+        if (minX < Infinity) {
+            return lngLatBoundsFromCorners(minX, minY, maxX, maxY);
+        }
+
+        const fromTrails = getTrailRecordBounds();
+        if (fromTrails) {
+            return fromTrails;
         }
 
         if (clusterTrails) {
@@ -540,20 +561,32 @@
         let boundsToFit = bounds;
 
         if (!boundsToFit && activeTrailRecord) {
-            const west = activeTrailRecord.min_lon ?? activeTrailRecord.lon;
-            const east = activeTrailRecord.max_lon ?? activeTrailRecord.lon;
-            const south = activeTrailRecord.min_lat ?? activeTrailRecord.lat;
-            const north = activeTrailRecord.max_lat ?? activeTrailRecord.lat;
-            if (
-                west !== undefined &&
-                east !== undefined &&
-                south !== undefined &&
-                north !== undefined
-            ) {
-                boundsToFit = lngLatBoundsFromCorners(west, south, east, north);
-            } else if (activeTrailRecord.id && gpxDataMap[activeTrailRecord.id]?.bbox) {
+            if (activeTrailRecord.id && gpxDataMap[activeTrailRecord.id]?.bbox) {
                 const box = gpxDataMap[activeTrailRecord.id].bbox!;
-                boundsToFit = lngLatBoundsFromCorners(box[0], box[1], box[2], box[3]);
+                boundsToFit = lngLatBoundsFromCorners(
+                    box[0],
+                    box[1],
+                    box[2],
+                    box[3],
+                );
+            } else {
+                const west = activeTrailRecord.min_lon ?? activeTrailRecord.lon;
+                const east = activeTrailRecord.max_lon ?? activeTrailRecord.lon;
+                const south = activeTrailRecord.min_lat ?? activeTrailRecord.lat;
+                const north = activeTrailRecord.max_lat ?? activeTrailRecord.lat;
+                if (
+                    west !== undefined &&
+                    east !== undefined &&
+                    south !== undefined &&
+                    north !== undefined
+                ) {
+                    boundsToFit = lngLatBoundsFromCorners(
+                        west,
+                        south,
+                        east,
+                        north,
+                    );
+                }
             }
         }
 
@@ -651,7 +684,13 @@
                     },
                     ...(onUnclusteredClick
                         ? {
+                              onMouseDown: (e: M.MapMouseEvent) => {
+                                  rememberPointerDown(e);
+                              },
                               onMouseUp: (e: M.MapMouseEvent) => {
+                                  if (!isClickNotDrag(e)) {
+                                      return;
+                                  }
                                   const properties = (e as any).features?.[0]
                                       ?.properties;
                                   const id =
@@ -693,7 +732,13 @@
                         },
                         ...(onUnclusteredClick
                             ? {
+                                  onMouseDown: (e: M.MapMouseEvent) => {
+                                      rememberPointerDown(e);
+                                  },
                                   onMouseUp: (e: M.MapMouseEvent) => {
+                                      if (!isClickNotDrag(e)) {
+                                          return;
+                                      }
                                       const trailId = (e as any).features?.[0]
                                           ?.properties?.trail;
                                       const trail = trails.find(
