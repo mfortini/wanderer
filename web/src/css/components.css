@@ -88,6 +88,11 @@
     pointer-events: auto;
 }
 
+/* Global .tooltip sets position:relative; keep profile markers absolute. */
+.wp-marker.tooltip {
+    position: absolute;
+}
+
 .wp-marker-thumb {
     display: none;
     position: absolute;

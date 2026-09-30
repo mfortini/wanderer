@@ -159,6 +159,7 @@ export function createMarkerFromWaypoint(waypoint: Waypoint, onDragEnd?: (marker
     marker.getElement().addEventListener("click", (e) => {
         e.stopPropagation();
         marker.togglePopup();
+        focusWaypoint(waypoint, "map");
     });
 
     return marker;

@@ -897,10 +897,15 @@ export class ElevationProfile {
 
         const xScale = chart.scales.x;
         const signature = this.waypoints
-            .map(
-                (waypoint) =>
-                    `${waypoint.id ?? ""}:${waypoint.icon ?? ""}:${waypoint.name ?? ""}:${(waypoint.photos ?? []).join("|")}:${waypoint._photos?.length ?? 0}:${waypoint.lat},${waypoint.lon}`,
-            )
+            .map((waypoint) => {
+                const localPhotos = (waypoint._photos ?? [])
+                    .map(
+                        (file) =>
+                            `${file.name}:${file.size}:${file.lastModified}`,
+                    )
+                    .join("|");
+                return `${waypoint.id ?? ""}:${waypoint.icon ?? ""}:${waypoint.name ?? ""}:${(waypoint.photos ?? []).join("|")}:${localPhotos}:${waypoint.lat},${waypoint.lon}`;
+            })
             .join(",");
 
         if (
