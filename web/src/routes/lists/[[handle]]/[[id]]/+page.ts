@@ -24,7 +24,9 @@ export const load: Load = async ({ params, fetch, parent }) => {
         totalPages: 1,
         hits: [],
     };
-    if (browser) {
+    // Only load the index on /lists — searching on detail URLs would reset the
+    // module-level infinite-scroll cache and drop already-loaded pages.
+    if (browser && !(params.handle && params.id)) {
         lists = await lists_search_filter(filter, 1, undefined, fetch, user);
     }
 

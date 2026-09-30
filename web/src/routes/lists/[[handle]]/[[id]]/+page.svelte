@@ -21,6 +21,7 @@
     import type { Trail } from "$lib/models/trail";
     import {
         lists_delete,
+        lists_replace_search_cache,
         lists_search_filter,
     } from "$lib/stores/list_store";
     import { trails_show } from "$lib/stores/trail_store";
@@ -60,6 +61,7 @@
     );
     let selectedTrail: Trail | null = $state(null);
     let applyingTrailHash = false;
+    let hadListSelection = untrack(() => !!data.selectedList);
 
     let loading: boolean = $state(true);
     let loadingNextPage: boolean = false;
@@ -84,13 +86,28 @@
         return listHref(selectedList);
     }
 
+    function resetMapToOverview() {
+        map?.flyTo({
+            animate: true,
+            zoom: 1,
+            center: [0, 0],
+        });
+    }
+
     $effect(() => {
         const nextList = data.selectedList ?? null;
         const id = page.params.id;
         if (!id) {
             selectedList = null;
+            if (hadListSelection) {
+                hadListSelection = false;
+                untrack(() => {
+                    resetMapToOverview();
+                });
+            }
             return;
         }
+        hadListSelection = true;
         if (nextList?.id === id) {
             selectedList = nextList;
         }
@@ -119,6 +136,9 @@
             lists = response.items;
             pagination.page = response.page;
             pagination.totalPages = response.totalPages;
+        } else {
+            // Keep the module cache aligned with local infinite-scroll state.
+            lists_replace_search_cache(lists);
         }
         loading = false;
     });
@@ -172,7 +192,7 @@
             return;
         }
         await lists_delete(selectedList);
-        await goto("/lists", { noScroll: true });
+        await goto("/lists", { replaceState: true, noScroll: true });
         await updateFilter(false);
     }
 
@@ -182,11 +202,19 @@
     }
 
     async function back() {
-        if (selectedTrail && selectedList) {
-            await goto(currentListHref(), { noScroll: true, keepFocus: true });
+        if (!browser) {
             return;
         }
-        await goto("/lists", { noScroll: true, keepFocus: true });
+        // Pop history so browser Back does not reopen the list we just left.
+        if (window.history.length > 1) {
+            history.back();
+            return;
+        }
+        await goto("/lists", {
+            replaceState: true,
+            noScroll: true,
+            keepFocus: true,
+        });
     }
 
     async function selectTrail(trail: Trail) {
@@ -226,9 +254,19 @@
     }
 
     async function loadNextPage() {
-        pagination.page += 1;
-        const response = await lists_search_filter(filter, pagination.page);
-        lists = response.items;
+        const nextPage = pagination.page + 1;
+        // Reseed so a page-1 reload elsewhere cannot drop already-loaded pages.
+        lists_replace_search_cache(lists);
+        const response = await lists_search_filter(filter, nextPage);
+        if (response.items.length < lists.length) {
+            const existingIds = new Set(lists.map((item) => item.id));
+            const appended = response.items.filter(
+                (item) => item.id && !existingIds.has(item.id),
+            );
+            lists = [...lists, ...appended];
+        } else {
+            lists = response.items;
+        }
         pagination.page = response.page;
         pagination.totalPages = response.totalPages;
     }
@@ -237,7 +275,12 @@
         loading = true;
 
         if ((selectedList || selectedTrail) && resetMap) {
-            await goto("/lists", { noScroll: true, keepFocus: true });
+            await goto("/lists", {
+                replaceState: true,
+                noScroll: true,
+                keepFocus: true,
+            });
+            resetMapToOverview();
         }
 
         pagination.page = 1;
