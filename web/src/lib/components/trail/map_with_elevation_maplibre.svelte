@@ -865,6 +865,30 @@
             if (marker && !marker.getPopup()?.isOpen()) {
                 marker.togglePopup();
             }
+
+            if (
+                map &&
+                Number.isFinite(detail.lat) &&
+                Number.isFinite(detail.lon)
+            ) {
+                const lngLat: [number, number] = [detail.lon, detail.lat];
+                const padded = map.getBounds().toArray();
+                // Shrink bounds slightly so near-edge points still get panned in.
+                const [[west, south], [east, north]] = padded;
+                const padX = (east - west) * 0.08;
+                const padY = (north - south) * 0.08;
+                const inView =
+                    detail.lon >= west + padX &&
+                    detail.lon <= east - padX &&
+                    detail.lat >= south + padY &&
+                    detail.lat <= north - padY;
+                if (!inView) {
+                    map.easeTo({
+                        center: lngLat,
+                        duration: 400,
+                    });
+                }
+            }
         }
 
         if (Number.isFinite(detail.lat) && Number.isFinite(detail.lon)) {
